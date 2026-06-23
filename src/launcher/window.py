@@ -14,7 +14,7 @@ from ..storage.meta import WorkMeta, type_to_name
 from ..storage.work_io import create_work, delete_work, work_exists
 from ..storage.workspace import Workspace
 from ..utils.stats import format_word_count
-from ..ui.titlebar import TitleBar, make_frameless, attach_title_bar
+from ..ui.titlebar import TitleBar, make_frameless
 from PySide6.QtGui import QIcon
 from .work_card import WorkCard
 from .create_dialog import CreateWorkDialog
@@ -361,9 +361,13 @@ class LauncherWindow(QWidget):
 
         tmp = Path(tempfile.mkdtemp())
         try:
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             result = subprocess.run(
                 ["git", "clone", url, str(tmp / final_name.strip())],
                 capture_output=True, timeout=120, text=True,
+                startupinfo=si,
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0,
             )
             if result.returncode != 0:
                 shutil.rmtree(tmp, ignore_errors=True)

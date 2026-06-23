@@ -3,7 +3,6 @@
 import json
 import subprocess
 from pathlib import Path
-from typing import Optional
 
 from .paths import get_config_dir
 
@@ -41,10 +40,14 @@ def _save_token(token: str, user: str):
 def test_remote_connection(url: str) -> tuple[bool, str]:
     """测试远程仓库是否可达。返回 (可达?, 信息)。"""
     try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         result = subprocess.run(
             ["git", "ls-remote", url],
             capture_output=True,
             timeout=30,
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0,
         )
         if result.returncode == 0:
             return True, "连接成功，仓库可达"
@@ -116,13 +119,23 @@ class GitManager:
         self._token, self._user = _load_token()
 
     def _run(self, args: list[str]) -> subprocess.CompletedProcess:
-        """执行 Git 命令。"""
-        return subprocess.run(
-            args,
-            cwd=self.work_path,
-            capture_output=True,
-            timeout=30,
-        )
+        """执行 Git 命令，失败返回模拟失败对象。"""
+        try:
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            return subprocess.run(
+                args,
+                cwd=self.work_path,
+                capture_output=True,
+                timeout=30,
+                startupinfo=startupinfo,
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0,
+            )
+        except FileNotFoundError:
+            msg = "Git not found. Please install from https://git-scm.com"
+            return subprocess.CompletedProcess(args, 1, b"", msg.encode("utf-8"))
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(args, 1, b"", b"Operation timed out (30s)")
 
     def _remote_with_token(self, remote_url: str) -> str:
         """将 Token 嵌入远程 URL 用于认证推送。"""

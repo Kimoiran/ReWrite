@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMainWindow, QMessageBox, QInputDialog, QLineEdit
 
 from .editor_widget import EditorWidget
@@ -26,14 +26,7 @@ class EditorWindow(QMainWindow):
 
     def __init__(self, work_path: str, parent=None):
         super().__init__(parent)
-        # 无边框标志必须在所有 widget 之前设置（否则窗口重建丢失内容）
         make_frameless(self)
-
-        # 设置窗口图标（无边框后会丢失 app 级图标）
-        _icon = Path(__file__).resolve().parent.parent.parent / "assets" / "icon.png"
-        if _icon.exists():
-            self.setWindowIcon(QIcon(str(_icon)))
-
         self.work_path = Path(work_path)
         self.modules = {}
         self.docks = {}

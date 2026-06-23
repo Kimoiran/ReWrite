@@ -113,7 +113,8 @@ def make_frameless(window):
 
 
 def attach_title_bar(window, title=None):
-    """在窗口布局完成后调用：创建并附加 TitleBar。"""
+    """在窗口布局完成后调用：创建并附加 TitleBar。
+    注意：调用前必须已在 __init__ 开头调过 make_frameless()。"""
     t = title or window.windowTitle() or "ReWrite"
     bar = TitleBar(t, window)
     window._title_bar = bar
