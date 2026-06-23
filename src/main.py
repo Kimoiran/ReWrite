@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication
 
 _project_root = Path(__file__).resolve().parent.parent
@@ -58,6 +58,11 @@ def main():
 
     # 应用现代主题
     setup_palette(app)
+
+    # 设置应用图标（任务栏和标题栏）
+    icon_path = _project_root / "assets" / "icon.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
 
     # 全局字体
     font = QFont()
