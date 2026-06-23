@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QSpinBox, QPushButton, QFormLayout, QComboBox,
     QGroupBox, QCheckBox, QFontComboBox, QMessageBox,
-    QLineEdit,
+    QLineEdit, QScrollArea,
 )
 
 from ..storage.paths import get_config_dir
@@ -64,8 +64,21 @@ class GeneralSettingsPage(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
+        # 外层：保存按钮固定在底部
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        # 滚动区域包裹所有设置项
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QLabel.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(content)
         layout.setSpacing(16)
+        layout.setContentsMargins(8, 8, 8, 8)
 
         # ── 编辑器 ──
         editor_group = QGroupBox("编辑器")
@@ -184,7 +197,11 @@ class GeneralSettingsPage(QWidget):
 
         layout.addStretch()
 
-        # ── 保存按钮 ──
+        # 结束内容区，放进滚动区域
+        scroll.setWidget(content)
+        outer.addWidget(scroll, stretch=1)
+
+        # ── 保存按钮（固定在底部） ──
         save_btn = QPushButton("保存设置")
         save_btn.setStyleSheet("""
             QPushButton {
@@ -194,7 +211,7 @@ class GeneralSettingsPage(QWidget):
             QPushButton:hover { background-color: #3a7bc8; }
         """)
         save_btn.clicked.connect(self._on_save)
-        layout.addWidget(save_btn)
+        outer.addWidget(save_btn)
 
     def _on_migrate_works(self):
         from ..storage.paths import migrate_works
@@ -222,5 +239,12 @@ class GeneralSettingsPage(QWidget):
         self.settings["font_family"] = self.font_combo.currentFont().family()
         self.settings["font_size"] = self.font_size_spin.value()
         self.settings["auto_git_status"] = self.git_status_check.isChecked()
-        save_settings(self.settings)
-        QMessageBox.information(self, "成功", "设置已保存，重启软件后生效")
+        try:
+            save_settings(self.settings)
+            # 确认保存路径
+            from ..storage.paths import get_config_dir
+            saved_path = get_config_dir() / "settings.json"
+            QMessageBox.information(self, "成功",
+                f"设置已保存\n\n保存位置：{saved_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "保存失败", str(e))

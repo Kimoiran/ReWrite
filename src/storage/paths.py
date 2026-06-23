@@ -73,15 +73,12 @@ def get_config_dir() -> Path:
 
 
 def migrate_works(new_path: str) -> tuple[bool, str]:
-    """迁移作品到新位置。new_path 为空表示恢复默认。"""
+    """迁移作品到新位置。如果目标已存在，合并内容。"""
     if not new_path.strip():
-        # 恢复默认 -> 清空自定义路径
         save_location_config(works_path="")
         return True, "已恢复默认位置"
 
     dst = Path(new_path.strip())
-    if dst.exists() and any(dst.iterdir()):
-        return False, f"目标目录已存在且不为空：{dst}"
 
     # 获取当前作品目录
     loc = load_location_config()
@@ -93,15 +90,30 @@ def migrate_works(new_path: str) -> tuple[bool, str]:
         else:
             old = Path.cwd() / "works"
 
+    # 新旧路径相同 → 直接更新配置即可
+    if (loc["works_path"] and dst.resolve() == Path(loc["works_path"]).resolve()) or \
+       (not loc["works_path"] and dst.resolve() == old.resolve()):
+        save_location_config(works_path=str(dst.resolve()))
+        return True, f"路径未变，已更新配置"
+
     if not old.exists():
-        # 旧位置不存在，直接设置新路径
         _ensure_dir(dst)
         save_location_config(works_path=str(dst.resolve()))
         return True, f"已设置作品位置为 {dst}"
 
     try:
-        _ensure_dir(dst.parent)
-        shutil.copytree(str(old), str(dst), dirs_exist_ok=True)
+        _ensure_dir(dst)
+        # 复制每个作品到目标（合并，不覆盖相同名称的）
+        count = 0
+        for item in old.iterdir():
+            if item.is_dir() and not item.name.startswith("."):
+                target = dst / item.name
+                if not target.exists():
+                    shutil.copytree(item, target)
+                    count += 1
+                else:
+                    count += 1  # 已存在也算成功
+        save_location_config(works_path=str(dst.resolve()))
         save_location_config(works_path=str(dst.resolve()))
         return True, f"已迁移 {len(list(dst.iterdir()))} 个作品到 {dst}"
     except (OSError, shutil.Error) as e:

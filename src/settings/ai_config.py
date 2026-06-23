@@ -10,10 +10,10 @@ AI_CONFIG_PATH = AI_CONFIG_DIR / "ai_config.json"
 AI_HISTORY_DIR = AI_CONFIG_DIR / "history"
 
 DEFAULT_AI_CONFIG = {
-    "provider": "deepseek",
+    "provider": "",
     "api_key": "",
     "api_url": "",
-    "model": "deepseek-v4-flash",
+    "model": "",
     "context_scope": ["current_chapter", "outline", "characters"],
     "system_prompt": "",
 }

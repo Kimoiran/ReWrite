@@ -15,6 +15,7 @@ from ..storage.work_io import create_work, delete_work, work_exists
 from ..storage.workspace import Workspace
 from ..utils.stats import format_word_count
 from ..ui.titlebar import TitleBar, make_frameless, attach_title_bar
+from PySide6.QtGui import QIcon
 from .work_card import WorkCard
 from .create_dialog import CreateWorkDialog
 
@@ -110,6 +111,11 @@ class LauncherWindow(QWidget):
         self.setStyleSheet("LauncherWindow { background-color: #f0f6fa; }")
         # 无边框标志必须在任何 widget 之前
         make_frameless(self)
+
+        # 设置窗口图标（无边框后会丢失 app 级图标）
+        icon_path = Path(__file__).resolve().parent.parent.parent / "assets" / "icon.png"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
