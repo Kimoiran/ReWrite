@@ -9,6 +9,39 @@ from PySide6.QtWidgets import (
 )
 
 
+class MessageBubble(QFrame):
+    """单条消息气泡。"""
+
+    def __init__(self, role: str, content: str, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("border: none;")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+
+        role_label = QLabel("你" if role == "user" else "AI")
+        role_label.setStyleSheet(
+            "font-weight: bold; font-size: 11px; color: #888888; border: none;"
+        )
+        layout.addWidget(role_label)
+
+        content_label = QLabel(content)
+        content_label.setWordWrap(True)
+        content_label.setTextFormat(Qt.TextFormat.RichText)
+        content_label.setStyleSheet(f"""
+            QLabel {{
+                padding: 8px 12px;
+                border-radius: 8px;
+                font-size: 13px;
+                line-height: 1.6;
+                background-color: {'#E3F2FD' if role == 'user' else '#F5F7FA'};
+                color: #1a2332;
+                border: none;
+            }}
+        """)
+        layout.addWidget(content_label)
+
+
 class ScopeChip(QCheckBox):
     """单个上下文范围开关。"""
 
@@ -167,6 +200,7 @@ class ChatPanel(QDockWidget):
         self.input_edit.setMaximumHeight(80)
         self.input_edit.setStyleSheet("QTextEdit { padding: 6px; font-size: 12px; }")
         self.input_edit.setAcceptRichText(False)
+        self.input_edit.textChanged.connect(self._on_input_changed)
         layout.addWidget(self.input_edit)
 
         # ── 发送按钮行 ──
@@ -197,7 +231,12 @@ class ChatPanel(QDockWidget):
         layout.addLayout(btn_layout)
 
         self.setWidget(widget)
-        self.send_btn.setEnabled(False)
+        self.send_btn.setEnabled(True)
+        self.input_edit.setEnabled(True)
+
+    def _on_input_changed(self):
+        """输入框内容变化时启用/禁用发送按钮。"""
+        self.send_btn.setEnabled(bool(self.input_edit.toPlainText().strip()))
 
     def update_memory(self, count: int):
         """更新记忆状态显示。"""

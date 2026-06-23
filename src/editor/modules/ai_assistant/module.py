@@ -191,7 +191,7 @@ class AIAssistantModule(BaseModule):
 
     def _on_chat_message(self, message: str, scope: str):
         if not self.agent.is_configured():
-            self.chat_panel.add_message("assistant", "请先在「文件 → 设置 → AI 助手」中配置 API Key")
+            self.chat_panel.add_message("assistant", "请先配置 AI 服务：菜单 → 文件 → 设置 → AI 助手，填入 API Key 后即可使用。")
             self.chat_panel.enable_send()
             return
         context = self.get_context(scope)
