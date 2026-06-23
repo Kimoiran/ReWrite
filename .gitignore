@@ -58,3 +58,6 @@ Desktop.ini
 # =====================
 *.log
 *.tmp
+
+# Temp test scripts
+scripts/check_*.py
