@@ -48,7 +48,8 @@ class AIAgent:
 
     def send_message(self, user_message: str,
                      current_context: str = "",
-                     on_stream: callable = None) -> str:
+                     on_stream: callable = None,
+                     enable_tools: bool = False) -> str:
         if not self.is_configured():
             return "[提示] 请先在设置中配置 AI API Key"
 
@@ -60,36 +61,46 @@ class AIAgent:
 
         self.history.append({"role": "user", "content": user_message})
 
-        # 控制上下文窗口：保留最近 20 轮，加上更早的记忆摘要
         recent = self.history[-40:] if len(self.history) > 40 else self.history
 
-        response = provider.send_message(
-            messages=recent,
-            system_prompt=system,
-            on_stream=on_stream,
-        )
+        if enable_tools and hasattr(provider, "send_with_tools"):
+            # 工具调用：不污染对话历史
+            response = provider.send_with_tools(
+                messages=recent,
+                system_prompt=system,
+                on_stream=on_stream,
+            )
+        else:
+            response = provider.send_message(
+                messages=recent,
+                system_prompt=system,
+                on_stream=on_stream,
+            )
 
         self.history.append({"role": "assistant", "content": response})
 
-        # 如果历史太长，压缩：保留最近 30 条，前面的归档
         if len(self.history) > 80:
-            # 保留最近 30 条
             keep = self.history[-30:]
             older = self.history[:-30]
-            # 把旧历史合并成一段摘要
             summary_parts = []
             for msg in older:
                 role = "用户" if msg["role"] == "user" else "AI"
                 content = msg["content"][:200]
                 summary_parts.append(f"{role}: {content}")
             summary = "--- 历史对话摘要 ---\n" + "\n".join(summary_parts[-20:])
-            # 摘要插入到最新对话前
             keep.insert(0, {"role": "user", "content": summary})
             self.history = keep
 
-        # 每次对话后持久化
         self._persist()
         return response
+
+    def undo_last_message(self) -> bool:
+        """撤回最后一条消息（用户+AI 一对），返回是否成功。"""
+        if len(self.history) < 2:
+            return False
+        self.history = self.history[:-2]  # 去掉最后 user + assistant
+        self._persist()
+        return True
 
     def clear_history(self):
         """清空记忆并删除磁盘文件。"""
