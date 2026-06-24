@@ -102,6 +102,19 @@ class TimelineModule(BaseModule):
                 return True
         return False
 
+    def apply_edit(self, target_name: str, field: str, value: str) -> tuple[bool, str]:
+        """AI 编辑时间线事件。"""
+        VALID_FIELDS = {"date", "title", "description"}
+        if field not in VALID_FIELDS:
+            return False, f"不支持修改字段「{field}」, 支持: {', '.join(sorted(VALID_FIELDS))}"
+        for e in self.events:
+            if e.title == target_name:
+                setattr(e, field, value)
+                self.events.sort(key=lambda e: _date_sort_key(e.date))
+                self.save()
+                return True, f"已修改时间线事件 {target_name} 的 {field}"
+        return False, f"未找到时间线事件「{target_name}」"
+
     def get_event(self, event_id: str) -> Optional[TimelineEvent]:
         for e in self.events:
             if e.id == event_id:

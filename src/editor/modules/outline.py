@@ -125,6 +125,28 @@ class OutlineModule(BaseModule):
                 setattr(entry, k, v)
         return True
 
+    def apply_edit(self, target_name: str, field: str, value: str) -> tuple[bool, str]:
+        """AI 编辑大纲条目内容。"""
+        VALID_FIELDS = {"title", "content", "status"}
+        if field not in VALID_FIELDS:
+            return False, f"不支持修改字段「{field}」, 支持: {', '.join(sorted(VALID_FIELDS))}"
+        if field == "status" and value not in ("待写", "写作中", "已完成"):
+            return False, f"状态值必须是: 待写/写作中/已完成"
+        def _find(entries):
+            for e in entries:
+                if e.title == target_name:
+                    return e
+                found = _find(e.children)
+                if found:
+                    return found
+            return None
+        entry = _find(self.entries)
+        if not entry:
+            return False, f"未找到大纲条目「{target_name}」"
+        setattr(entry, field, value)
+        self.save()
+        return True, f"已修改大纲条目 {target_name} 的 {field}"
+
     def search(self, query: str) -> list:
         q = query.lower()
         results = []

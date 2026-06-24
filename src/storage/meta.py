@@ -9,7 +9,7 @@ from typing import Optional
 
 
 # 模块 ID 列表
-AVAILABLE_MODULES = ["chapters", "characters", "outline", "timeline", "ai_assistant"]
+AVAILABLE_MODULES = ["chapters", "characters", "outline", "timeline", "worldview", "ai_assistant"]
 
 # 模块中文名映射
 MODULE_NAMES = {

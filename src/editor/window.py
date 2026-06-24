@@ -114,6 +114,20 @@ class EditorWindow(QMainWindow):
         self.status_bar = EditorStatusBar()
         self.setStatusBar(self.status_bar)
 
+        # 设置初始比例：左侧章节列表面板 220px，右侧面板和中央编辑区按 3:7 分剩余空间
+        QTimer.singleShot(0, self._resize_docks)
+
+    def _resize_docks(self):
+        """给面板设置合理的初始大小比例。"""
+        from PySide6.QtWidgets import QSizePolicy
+        # 左侧章节列表面板
+        self.resizeDocks([self.chapter_list], [240], Qt.Orientation.Horizontal)
+        # 右侧所有 dock
+        right_docks = [d for d in self.docks.values() if d.isVisible()]
+        if right_docks:
+            right_width = max(280, self.width() // 4)
+            self.resizeDocks(right_docks, [right_width // len(right_docks)] * len(right_docks), Qt.Orientation.Horizontal)
+
     def _setup_save_engine(self):
         """初始化保存引擎（实时写入 + 定时快照）。"""
         chap_mod = self.modules.get("chapters")
@@ -247,6 +261,12 @@ class EditorWindow(QMainWindow):
                 document_sync.unregister(key, self.editor.apply_sync)
         document_sync.register(path_str, self.editor.apply_sync)
         self.status_bar.show_saved()
+
+        # 加载该章节的批注高亮
+        ai_mod = self.modules.get("ai_assistant")
+        if ai_mod and hasattr(ai_mod, "annotation_mgr"):
+            chapter_anns = ai_mod.annotation_mgr.get_chapter_annotations(path_str)
+            self.editor.set_annotations(chapter_anns)
 
     def _on_editor_modified(self):
         """内容变化：实时写入 + 更新字数 + 更新侧栏。不发射信号。"""

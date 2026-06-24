@@ -61,3 +61,5 @@ Desktop.ini
 
 # Temp test scripts
 scripts/check_*.py
+scripts/test_*.py
+mcp/test_*.py

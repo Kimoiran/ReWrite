@@ -5,6 +5,7 @@ from .chapters import ChapterModule
 from .characters import CharacterModule
 from .outline import OutlineModule
 from .timeline import TimelineModule
+from .worldview import WorldviewModule
 from .ai_assistant.module import AIAssistantModule
 
 MODULE_MAP = {
@@ -12,6 +13,7 @@ MODULE_MAP = {
     "characters": CharacterModule,
     "outline": OutlineModule,
     "timeline": TimelineModule,
+    "worldview": WorldviewModule,
     "ai_assistant": AIAssistantModule,
 }
 
@@ -20,5 +22,6 @@ MODULE_DISPLAY_NAMES = {
     "characters": "人物设定卡",
     "outline": "大纲",
     "timeline": "时间线",
+    "worldview": "世界观",
     "ai_assistant": "AI 写作助手",
 }
