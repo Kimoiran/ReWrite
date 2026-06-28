@@ -75,6 +75,45 @@ def _save(path: Path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def make_chapter_html(title: str, content: str = "") -> str:
+    """生成标准化的章节 HTML（QTextEdit 兼容格式，统一 14pt 正文/17pt 标题）。
+
+    与 QTextEdit 默认字号一致，避免 px/pt 混用导致的字体大小不一致。
+    """
+    safe_title = _re.sub(r'[\\/:*?"<>|]', "", title).strip()[:80]
+    lines = [
+        '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0//EN" '
+        '"http://www.w3.org/TR/REC-html40/strict.dtd">',
+        '<html><head><meta name="qrichtext" content="1" />'
+        '<meta charset="utf-8" />'
+        '<style type="text/css">',
+        "p, li { white-space: pre-wrap; }",
+        "hr { height: 1px; border-width: 0; }",
+        'li.unchecked::marker { content: "\\2610"; }',
+        'li.checked::marker { content: "\\2612"; }',
+        "</style></head>",
+        '<body style="'
+        "font-family:'Microsoft YaHei UI','Microsoft YaHei','Segoe UI','sans-serif';"
+        " font-size:14pt; font-weight:400; font-style:normal;\">",
+        # 标题行：17pt 加粗
+        '<p style=" margin-top:0px; margin-bottom:0px; margin-left:0px; '
+        'margin-right:0px; -qt-block-indent:0; text-indent:0px;">'
+        '<span style=" font-size:17pt; font-weight:700;">'
+        f'{safe_title}</span></p>',
+    ]
+    if content:
+        lines.append(content)
+    else:
+        # 默认正文空段：显式 14pt，新文字从正确大小开始
+        lines.append(
+            '<p style=" margin-top:0px; margin-bottom:0px; margin-left:0px; '
+            'margin-right:0px; -qt-block-indent:0; text-indent:0px;">'
+            '<span style=" font-size:14pt;"> </span></p>'
+        )
+    lines.append("</body></html>")
+    return "\n".join(lines)
+
+
 def _date_sort_key(date_str: str):
     if not date_str:
         return (1, "", 0)

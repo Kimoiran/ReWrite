@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QDockWidget
 
 from .base_module import BaseModule
 from ...utils.stats import count_words
+from .ai_assistant.skills._shared import make_chapter_html
 
 
 @dataclass
@@ -87,8 +88,8 @@ class ChapterModule(BaseModule):
         filename = self._build_filename(order, safe_title)
         filepath = self.chapters_dir / filename
 
-        # 空 HTML 模板
-        html = f"<h2>{safe_title}</h2>\n<p></p>"
+        # 标准化的 QTextEdit HTML 模板
+        html = make_chapter_html(safe_title)
         try:
             filepath.write_text(html, encoding="utf-8")
         except OSError:

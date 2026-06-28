@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 from .base_skill import Skill
-from ._shared import _work_path, _load, _save
+from ._shared import _work_path, _load, _save, make_chapter_html
 
 
 class GetChaptersSkill(Skill):
@@ -104,27 +104,7 @@ class CreateChapterSkill(Skill):
         filepath = chapters_dir / filename
 
         content = args.get("content", "")
-        if content:
-            html = content
-        else:
-            html = (
-                '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0//EN" '
-                '"http://www.w3.org/TR/REC-html40/strict.dtd">\n'
-                '<html><head><meta name="qrichtext" content="1" />'
-                '<meta charset="utf-8" />'
-                '<style type="text/css">\n'
-                "p, li { white-space: pre-wrap; }\n"
-                "hr { height: 1px; border-width: 0; }\n"
-                "li.unchecked::marker { content: \"\\2610\"; }\n"
-                "li.checked::marker { content: \"\\2612\"; }\n"
-                '</style></head><body style="'
-                "font-family:'Microsoft YaHei UI','Microsoft YaHei','Segoe UI','sans-serif';"
-                " font-size:14px; font-weight:400; font-style:normal;\">\n"
-                f'<p style=" margin-top:0px; margin-bottom:0px; margin-left:0px; '
-                f'margin-right:0px; -qt-block-indent:0; text-indent:0px;">'
-                f'<span style=" font-size:17pt; font-weight:700;">{safe_title}</span></p>\n'
-                "</body></html>"
-            )
+        html = make_chapter_html(safe_title, content)
 
         filepath.write_text(html, encoding="utf-8")
         return {"success": True, "title": safe_title, "order": next_order,
