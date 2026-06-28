@@ -481,10 +481,34 @@ class AIAssistantModule(BaseModule):
                               ("timeline", "_refresh"), ("worldview", "_build_tree")]:
             mod = p.modules.get(mod_id)
             if mod and hasattr(mod, 'load'):
-                mod.load()  # 从磁盘重载，覆盖旧内存数据
+                mod.load()
                 dock = p.docks.get(mod_id)
                 if dock and hasattr(dock, attr):
                     getattr(dock, attr)()
+
+        # 单独处理章节：刷新侧栏列表 + 如果当前章节被改过则重载编辑器内容
+        chap_mod = p.modules.get("chapters")
+        if chap_mod and hasattr(chap_mod, 'load'):
+            chap_mod.load()
+            chap_list = getattr(p, 'chapter_list', None)
+            if chap_list and hasattr(chap_list, '_refresh'):
+                chap_list._refresh()
+        # 重载当前编辑器内容（如果 AI 修改了当前章节）
+        if self._editor:
+            current_path = self._editor.current_chapter_path()
+            if current_path and Path(current_path).exists():
+                try:
+                    new_html = Path(current_path).read_text(encoding="utf-8")
+                    if new_html != self._editor.get_html():
+                        cursor_pos = self._editor.textCursor().position()
+                        self._editor.blockSignals(True)
+                        self._editor.setHtml(new_html)
+                        cursor = self._editor.textCursor()
+                        cursor.setPosition(min(cursor_pos, len(new_html)))
+                        self._editor.setTextCursor(cursor)
+                        self._editor.blockSignals(False)
+                except OSError:
+                    pass
 
     def _on_analyze(self):
         if not self.agent.is_configured():

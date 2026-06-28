@@ -1,5 +1,6 @@
-"""章节技能 — 读取/修改正文。"""
+"""章节技能 — 读取/修改/重命名/删除正文。"""
 
+import re
 from typing import Any
 
 from .base_skill import Skill
@@ -107,3 +108,99 @@ class UpdateChapterSkill(Skill):
         if result.get("success"):
             return f"✅ 已修改章节「{c}」"
         return f"❌ 修改失败: {result.get('error')}"
+
+
+class RenameChapterSkill(Skill):
+    @property
+    def name(self) -> str: return "rename_chapter"
+    @property
+    def description(self) -> str: return "重命名章节"
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "chapter": {"type": "string", "description": "当前章节名"},
+                "new_name": {"type": "string", "description": "新章节名"},
+            },
+            "required": ["chapter", "new_name"],
+        }
+    def execute(self, args, work_name=""):
+        import os as _os
+        work = _work_path(args.get("work", work_name))
+        chapter = args.get("chapter", "")
+        new_name = args.get("new_name", "")
+        chapters_dir = work / "chapters"
+
+        if not chapters_dir.exists():
+            return {"success": False, "error": "chapters 目录不存在"}
+
+        target = None
+        for f in chapters_dir.iterdir():
+            display = f.stem.split("_", 1)[-1] if "_" in f.stem else f.stem
+            if display == chapter or f.stem == chapter:
+                target = f
+                break
+
+        if not target:
+            return {"success": False, "error": f"未找到章节: {chapter}"}
+
+        # 保留序号
+        order = target.stem.split("_", 1)[0] if "_" in target.stem else ""
+        safe_name = re.sub(r'[\\/:*?"<>|]', "", new_name).strip()[:80]
+        if order:
+            new_filename = f"{int(order):04d}_{safe_name}.html"
+        else:
+            new_filename = f"{safe_name}.html"
+
+        new_path = chapters_dir / new_filename
+        _os.rename(str(target), str(new_path))
+        return {"success": True, "old_name": chapter, "new_name": safe_name,
+                "path": str(new_path.relative_to(work))}
+
+    def summarize(self, result, args=None):
+        if result.get("success"):
+            return f"✅ 已重命名章节「{result['old_name']}」→「{result['new_name']}」"
+        return f"❌ 重命名失败: {result.get('error')}"
+
+
+class DeleteChapterSkill(Skill):
+    @property
+    def name(self) -> str: return "delete_chapter"
+    @property
+    def description(self) -> str: return "删除指定章节"
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "chapter": {"type": "string", "description": "章节名"},
+            },
+            "required": ["chapter"],
+        }
+    def execute(self, args, work_name=""):
+        import os as _os
+        work = _work_path(args.get("work", work_name))
+        chapter = args.get("chapter", "")
+        chapters_dir = work / "chapters"
+
+        if not chapters_dir.exists():
+            return {"success": False, "error": "chapters 目录不存在"}
+
+        target = None
+        for f in chapters_dir.iterdir():
+            display = f.stem.split("_", 1)[-1] if "_" in f.stem else f.stem
+            if display == chapter or f.stem == chapter:
+                target = f
+                break
+
+        if not target:
+            return {"success": False, "error": f"未找到章节: {chapter}"}
+
+        _os.remove(str(target))
+        return {"success": True, "name": chapter}
+
+    def summarize(self, result, args=None):
+        if result.get("success"):
+            return f"✅ 已删除章节「{(args or {}).get('chapter', '')}」"
+        return f"❌ 删除失败: {result.get('error')}"
