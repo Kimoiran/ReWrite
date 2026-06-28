@@ -70,3 +70,6 @@ mcp/test_*.py
 # MCP server (removed)
 mcp/
 src/mcp_manager.py
+
+# Release notes (local only, not uploaded)
+docs/release-notes/
