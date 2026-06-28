@@ -174,15 +174,9 @@ class LauncherWindow(QWidget):
         content_layout.addWidget(scroll_area, stretch=1)
 
         # ── 状态栏 ──
-        status_row = QHBoxLayout()
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #8a9aaa; font-size: 11px; padding: 4px 0;")
-        status_row.addWidget(self.status_label)
-        status_row.addStretch()
-        self.mcp_status_label = QLabel("")
-        self.mcp_status_label.setStyleSheet("color: #8a9aaa; font-size: 11px; padding: 4px 0;")
-        status_row.addWidget(self.mcp_status_label)
-        content_layout.addLayout(status_row)
+        content_layout.addWidget(self.status_label)
 
         # ── 空状态提示 ──
         self.empty_label = QLabel("还没有作品\n点击上方「新建作品」按钮创建一个吧")

@@ -59,20 +59,10 @@ def main():
     # 根据配置确定作品和配置目录
     works_dir = get_works_dir(_project_root)
 
-    # 设置 MCP 工具的环境变量（exe 模式下 BASE_DIR 不可用）
-    import os as _os
-    _os.environ["REWRITE_WORKS_DIR"] = str(works_dir)
-
     workspace = Workspace(works_dir)
 
     # 静默清理崩溃标记（不弹窗）
     _clean_crash_markers(workspace)
-
-    # ── MCP 服务器：启动时后台静默运行 ──
-    from src.mcp_manager import MCPManager, install_mcp_config
-    install_mcp_config()  # 写入 Claude Desktop 配置
-    mcp_mgr = MCPManager()
-    mcp_mgr.start()
 
     from src.launcher.window import LauncherWindow
     launcher = LauncherWindow(workspace)
@@ -99,21 +89,11 @@ def main():
         dialog = SettingsWindow(launcher)
         dialog.exec()
 
-    # 在状态栏显示 MCP 状态
-    mcp_mgr.status_changed.connect(
-        lambda s: launcher.mcp_status_label.setText(
-            {"running": "MCP: 运行中", "stopped": "MCP: 未运行", "error": "MCP: 错误"}.get(s, "")
-        )
-    )
-    launcher.mcp_status_label.setText("MCP: 启动中...")
-
     launcher.open_work_requested.connect(open_editor)
     launcher.settings_requested.connect(open_settings)
     launcher.show()
 
-    ret = app.exec()
-    mcp_mgr.stop()
-    sys.exit(ret)
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":

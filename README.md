@@ -17,6 +17,8 @@
 
 ### 模块化设计，按需启用
 
+每个作品独立配置功能模块，不需要的绝不打扰：
+
 | 模块 | 说明 | 默认 |
 |------|------|------|
 | 章节管理 | 章节增删改、重命名、排序、实时保存 | 必选 |
@@ -26,29 +28,30 @@
 | 世界观 | 分章节式世界设定，富文本编辑 | 可选 |
 | AI 写作助手 | 对话 + 批注 + 长期记忆 + 直接修改数据 | 可选 |
 
-### 所有面板可拖拽分离
-每个面板都可以拖出来变成独立窗口，也可以贴回任意边缘。
-
-### AI 写作助手（API 原生 function calling）
+### AI 写作助手（Skill 系统 + function calling）
 - **对话模式**：侧边面板与 AI 对话，像 ChatGPT 一样自然
 - **长期记忆**：AI 记得之前聊过什么，关编辑器再打开还在
 - **上下文控制**：芯片式开关，精确控制 AI 能读到什么
-- **多供应商**：支持 Claude、OpenAI、DeepSeek
-- **直接修改数据**：通过 API function calling 直接创建/修改角色、条目、事件，不污染对话历史
-- **AI 编辑可确认**：修改前弹出对话框显示新旧值对比，确认后才执行
+- **多供应商**：支持 DeepSeek、Claude、OpenAI
+- **Skill 系统**：所有可执行操作封装为独立 Skill，AI 通过原生 function calling 调用
+- **操作前确认**：AI 提议修改时弹出对话框，显示具体操作内容和新旧值对比，确认后才执行
+- **自然语言反馈**：每个 Skill 会总结自己做了什么（如「已将「克诺」的「性格」修改为「冷酷果断」」）
 - **批注模式**：AI 跨模块标记建议（正文、人物、大纲、时间线）
-
-### MCP 服务器（集成）
-- 启动时自动在后台运行 MCP 服务器（stdio 协议）
-- 提供 13 个工具供外部 AI 客户端调用
-- 自动写入 Claude Desktop 配置（`~/.claude/mcp.json`）
-- 与软件自带 AI 共享同一套工具函数
 
 ### 人物设定卡（多级分组）
 - 树形结构，级数不限：宗门 → 山头 → 人
 - 双击重命名，右键添加同级/子级
 - 批量导入 AI 输出的结构化文本
 - 底部详情编辑器，点击角色显示完整字段
+
+### 大纲（双视图）
+- 树形视图：点击条目显示详情，双击编辑标题，右键添加子级
+- 文档视图：纯文本 Markdown 风格，用 `#` 号分级
+- 条目有状态标记（待写/写作中/已完成）
+
+### 时间线
+- 事件列表，按日期智能排序（支持数字和中英文混合）
+- 添加/编辑/删除事件
 
 ### 世界观模块
 - 树形分章节，可无限嵌套
@@ -59,10 +62,12 @@
 - 打字即保存：每次按键直接写入文件
 - 定时快照：每 5 分钟自动备份
 
+### 所有面板可拖拽分离
+章节列表、人物卡、大纲、时间线、AI 对话、批注——每个面板都可以拖出来变成独立窗口，也可以贴回任意边缘。
+
 ### 导入导出
 - 导出 .writepack：完整打包作品
 - 导入：ZIP 文件 / Git 仓库 / Markdown / Word / 纯文本
-- 批量导入人物结构数据
 
 ### Git 集成
 - 每个作品独立的 Git 仓库
@@ -105,7 +110,7 @@ python src/main.py
 
 打开软件 → 文件 → 设置 → AI 助手，选择供应商（DeepSeek / Claude / OpenAI），输入 API Key，保存即可。
 
-AI 面板支持 **function calling**：说「把克诺的性格改成冷酷果断」AI 会直接调用工具修改数据。
+AI 面板支持 **function calling + Skill 系统**：说「把克诺的性格改成冷酷果断」，AI 会先弹窗让你确认，确认后直接修改数据。
 
 ### 打包为 exe
 
@@ -124,23 +129,45 @@ ReWrite/
 ├── src/                   # 源代码
 │   ├── main.py
 │   ├── launcher/          # 作品选择页
-│   ├── editor/            # 编辑器
-│   │   └── modules/       # 可选模块
-│   │       ├── characters.py   # 人物卡（多级分组）
-│   │       ├── outline.py      # 大纲
-│   │       ├── timeline.py     # 时间线
-│   │       ├── worldview.py    # 世界观
-│   │       └── ai_assistant/   # AI 助手（function calling）
-│   ├── mcp_manager.py     # MCP 服务器管理器
+│   ├── editor/            # 编辑器核心
+│   │   ├── editor_widget.py  # 富文本编辑器
+│   │   ├── window.py         # 编辑器主窗口
+│   │   ├── chapter_list.py   # 章节列表面板
+│   │   ├── search.py         # 全局搜索
+│   │   ├── autosave/         # 实时写入 + 快照
+│   │   └── modules/          # 可选模块
+│   │       ├── characters.py     # 人物卡（多级分组）
+│   │       ├── outline.py        # 大纲
+│   │       ├── timeline.py       # 时间线
+│   │       ├── worldview.py      # 世界观
+│   │       └── ai_assistant/     # AI 助手
+│   │           ├── agent.py          # 对话管理 + 记忆
+│   │           ├── providers.py      # API 调用（function calling）
+│   │           ├── skills/           # Skill 系统
+│   │           │   ├── base_skill.py     # 基类
+│   │           │   ├── character_skills.py  # 人物卡技能
+│   │           │   ├── outline_skills.py    # 大纲技能
+│   │           │   ├── timeline_skills.py   # 时间线技能
+│   │           │   ├── worldview_skills.py  # 世界观技能
+│   │           │   ├── registry.py          # 注册表
+│   │           │   └── _shared.py           # 共享工具函数
+│   │           ├── contexts.py    # 上下文收集
+│   │           ├── prompt_templates.py  # 提示词模板
+│   │           ├── markdown_render.py    # Markdown → HTML
+│   │           ├── annotation_manager.py # 批注管理
+│   │           └── ui/           # AI 对话界面
 │   ├── storage/           # 存储层
-│   ├── settings/          # 设置
+│   │   ├── workspace.py
+│   │   ├── work_io.py
+│   │   ├── meta.py
+│   │   ├── paths.py
+│   │   └── git_manager.py
+│   ├── settings/          # 设置页面
 │   ├── import_export/     # 导入导出
-│   └── ui/                # 主题
-├── mcp/                   # MCP 服务器 + 共享工具库
-│   ├── server.py          # stdio MCP 服务器
-│   └── tools.py           # 工具函数（AI 助手和 MCP 共用）
-├── assets/
-├── run.bat
+│   ├── ui/                # 主题 + 标题栏
+│   └── utils/
+├── assets/                # 图标等资源
+├── run.bat                # 一键启动
 └── README.md
 
 works/                     # 作品（被 .gitignore 排除）

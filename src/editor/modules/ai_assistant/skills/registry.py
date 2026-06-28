@@ -1,0 +1,54 @@
+"""Skill 注册表 — 所有技能在此注册，供 Agent 和 MCP 共同使用。"""
+
+from typing import Any
+
+from .base_skill import Skill
+from .character_skills import GetCharactersSkill, CreateCharacterSkill, UpdateCharacterSkill, AddGroupSkill
+from .outline_skills import GetOutlineSkill, UpdateOutlineEntrySkill
+from .timeline_skills import GetTimelineSkill, UpdateTimelineEventSkill
+from .worldview_skills import GetWorldviewSkill, CreateWorldviewEntrySkill
+
+
+def get_all_skills() -> list[Skill]:
+    """返回所有注册的技能实例。"""
+    return [
+        GetCharactersSkill(),
+        CreateCharacterSkill(),
+        UpdateCharacterSkill(),
+        AddGroupSkill(),
+        GetOutlineSkill(),
+        UpdateOutlineEntrySkill(),
+        GetTimelineSkill(),
+        UpdateTimelineEventSkill(),
+        GetWorldviewSkill(),
+        CreateWorldviewEntrySkill(),
+    ]
+
+
+def get_skill(name: str) -> Skill | None:
+    """按名称查找技能。"""
+    for s in get_all_skills():
+        if s.name == name:
+            return s
+    return None
+
+
+def execute_skill(name: str, args: dict[str, Any] = None, work_name: str = "") -> dict:
+    """按名称执行技能。"""
+    skill = get_skill(name)
+    if not skill:
+        return {"success": False, "error": f"未知技能: {name}"}
+    try:
+        return skill.execute(args, work_name)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def get_openai_tools() -> list[dict]:
+    """获取 OpenAI function calling 格式的工具定义。"""
+    return [s.to_openai_tool() for s in get_all_skills()]
+
+
+def get_claude_tools() -> list[dict]:
+    """获取 Claude tool 格式的工具定义。"""
+    return [s.to_claude_tool() for s in get_all_skills()]
