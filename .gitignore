@@ -59,12 +59,15 @@ Desktop.ini
 *.log
 *.tmp
 
-# Temp test scripts
+# Temp test scripts and unused tools
 scripts/check_*.py
 scripts/test_*.py
 scripts/build_*.py
 scripts/clean_*.py
 scripts/backup.py
+scripts/generate_icon.py
+scripts/make_ico.py
+scripts/release.py
 mcp/test_*.py
 
 # MCP server (removed)
