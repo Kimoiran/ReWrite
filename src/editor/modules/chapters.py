@@ -109,12 +109,21 @@ class ChapterModule(BaseModule):
         new_filename = self._build_filename(info.order, safe_title)
         new_path = self.chapters_dir / new_filename
 
-        # 读取旧内容，更新 h2 标题
+        # 读取旧内容，更新标题标签（支持 <h2> 和 QTextEdit 的 <p><span> 两种格式）
         try:
             html = old_path.read_text(encoding="utf-8")
         except OSError:
             return None
-        html = re.sub(r"<h2>.*?</h2>", f"<h2>{safe_title}</h2>", html, count=1)
+        # 优先匹配 QTextEdit 的 <p><span style="...font-weight:700;">...</span></p>
+        new_html = re.sub(
+            r'(<p[^>]*><span[^>]*font-weight:\s*700[^>]*>).*?(</span></p>)',
+            rf'\1{safe_title}\2',
+            html, count=1, flags=re.IGNORECASE,
+        )
+        if new_html == html:
+            # 回退：匹配 <h2>...</h2>
+            new_html = re.sub(r'<h2>.*?</h2>', f'<h2>{safe_title}</h2>', html, count=1)
+        html = new_html
 
         try:
             old_path.rename(new_path)

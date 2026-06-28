@@ -46,9 +46,9 @@ WORKFLOW = """## 工作方式
 """
 
 
-SKILLS = """## 可用技能（共 19 个）
+SKILLS = """## 可用技能（共 22 个）
 
-章节：get_chapters / read_chapter / update_chapter
+章节：get_chapters / read_chapter / create_chapter / update_chapter / rename_chapter / delete_chapter
 人物卡：get_characters / create_character / update_character / delete_character / add_group / delete_group
 大纲：get_outline / update_outline_entry / delete_outline_entry
 时间线：get_timeline / update_timeline_event / delete_timeline_event

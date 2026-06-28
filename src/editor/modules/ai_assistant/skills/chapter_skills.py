@@ -1,4 +1,4 @@
-"""章节技能 — 读取/修改/重命名/删除正文。"""
+"""章节技能 — 读取/创建/修改/重命名/删除正文。"""
 
 import re
 from typing import Any
@@ -60,6 +60,80 @@ class ReadChapterSkill(Skill):
         if "content" in result:
             return f"已读取章节「{c}」({len(result['content'])}字符)"
         return f"❌ 未找到章节「{c}」"
+
+
+class CreateChapterSkill(Skill):
+    """创建新章节。自动分配序号，生成带标题的 HTML 文件。"""
+
+    @property
+    def name(self) -> str: return "create_chapter"
+    @property
+    def description(self) -> str: return "创建新章节"
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "章节标题（如「第一章」）"},
+                "content": {"type": "string", "description": "（可选）初始正文 HTML，不填则只生成标题"},
+            },
+            "required": ["title"],
+        }
+    def execute(self, args, work_name=""):
+        work = _work_path(args.get("work", work_name))
+        title = args.get("title", "").strip()
+        if not title:
+            return {"success": False, "error": "章节标题不能为空"}
+
+        chapters_dir = work / "chapters"
+        if not chapters_dir.exists():
+            chapters_dir.mkdir(parents=True)
+
+        # 确定下一个序号
+        max_order = 0
+        for f in chapters_dir.iterdir():
+            if f.suffix.lower() == ".html" and not f.name.startswith("."):
+                stem = f.stem
+                order_part = stem.split("_", 1)[0] if "_" in stem else ""
+                if order_part.isdigit():
+                    max_order = max(max_order, int(order_part))
+        next_order = max_order + 1
+
+        safe_title = re.sub(r'[\\/:*?"<>|]', "", title).strip()[:80]
+        filename = f"{next_order:04d}_{safe_title}.html"
+        filepath = chapters_dir / filename
+
+        content = args.get("content", "")
+        if content:
+            html = content
+        else:
+            html = (
+                '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0//EN" '
+                '"http://www.w3.org/TR/REC-html40/strict.dtd">\n'
+                '<html><head><meta name="qrichtext" content="1" />'
+                '<meta charset="utf-8" />'
+                '<style type="text/css">\n'
+                "p, li { white-space: pre-wrap; }\n"
+                "hr { height: 1px; border-width: 0; }\n"
+                "li.unchecked::marker { content: \"\\2610\"; }\n"
+                "li.checked::marker { content: \"\\2612\"; }\n"
+                '</style></head><body style="'
+                "font-family:'Microsoft YaHei UI','Microsoft YaHei','Segoe UI','sans-serif';"
+                " font-size:14px; font-weight:400; font-style:normal;\">\n"
+                f'<p style=" margin-top:0px; margin-bottom:0px; margin-left:0px; '
+                f'margin-right:0px; -qt-block-indent:0; text-indent:0px;">'
+                f'<span style=" font-size:17pt; font-weight:700;">{safe_title}</span></p>\n'
+                "</body></html>"
+            )
+
+        filepath.write_text(html, encoding="utf-8")
+        return {"success": True, "title": safe_title, "order": next_order,
+                "path": str(filepath.relative_to(work))}
+
+    def summarize(self, result, args=None):
+        if result.get("success"):
+            return f"✅ 已创建章节「{result['title']}」（第 {result['order']} 章）"
+        return f"❌ 创建失败: {result.get('error')}"
 
 
 class UpdateChapterSkill(Skill):

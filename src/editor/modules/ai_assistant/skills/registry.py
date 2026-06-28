@@ -6,7 +6,8 @@ from .base_skill import Skill
 from .character_skills import (GetCharactersSkill, CreateCharacterSkill, UpdateCharacterSkill,
                                 AddGroupSkill, DeleteCharacterSkill, DeleteGroupSkill)
 from .outline_skills import GetOutlineSkill, UpdateOutlineEntrySkill, DeleteOutlineEntrySkill
-from .chapter_skills import GetChaptersSkill, ReadChapterSkill, UpdateChapterSkill, RenameChapterSkill, DeleteChapterSkill
+from .chapter_skills import (GetChaptersSkill, ReadChapterSkill, CreateChapterSkill,
+                                UpdateChapterSkill, RenameChapterSkill, DeleteChapterSkill)
 from .timeline_skills import GetTimelineSkill, UpdateTimelineEventSkill, DeleteTimelineEventSkill
 from .worldview_skills import (GetWorldviewSkill, CreateWorldviewEntrySkill,
                                 UpdateWorldviewEntrySkill, DeleteWorldviewEntrySkill)
@@ -32,6 +33,7 @@ def get_all_skills() -> list[Skill]:
         CreateWorldviewEntrySkill(),
         GetChaptersSkill(),
         ReadChapterSkill(),
+        CreateChapterSkill(),
         UpdateChapterSkill(),
         RenameChapterSkill(),
         DeleteChapterSkill(),

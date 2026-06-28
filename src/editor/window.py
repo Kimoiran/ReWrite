@@ -317,6 +317,8 @@ class EditorWindow(QMainWindow):
                 if str(c.path) == new_path:
                     self.status_bar.set_chapter_name(c.title)
                     break
+            # 同步编辑器路径，否则实时写入会重建旧文件
+            self.editor.set_current_chapter(new_path)
 
     def _on_save(self):
         """手动保存（Ctrl+S）：创建快照 + 广播同步 + 保存模块数据。"""
