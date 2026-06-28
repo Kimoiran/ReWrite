@@ -1,6 +1,7 @@
 """API 供应商抽象层 — Claude / OpenAI / 自定义 + 工具调用。"""
 
 import json
+import urllib.request, urllib.error
 from abc import ABC, abstractmethod
 
 from .skills.registry import get_all_skills, get_skill, execute_skill, get_openai_tools, get_claude_tools
@@ -219,6 +220,97 @@ class OpenAIProvider(AIProvider):
         return "工具已执行: " + ", ".join(executed)
 
 
+def _make_chat_request(agent, messages: list, system_prompt: str = "", tools: list = None) -> dict:
+    """发送底层聊天请求，返回原始响应 dict。不处理历史，不持久化。
+    统一用 OpenAI 兼容格式（DeepSeek / OpenAI / 自定义都支持）。"""
+    config = agent.config
+    api_key = config.get("api_key", "")
+    model = config.get("model", "deepseek-v4-flash")
+    api_url = config.get("api_url", "https://api.deepseek.com")
+
+    url = api_url.rstrip("/") + "/chat/completions"
+    full = []
+    if system_prompt and system_prompt.strip():
+        full.append({"role": "system", "content": system_prompt})
+    full.extend(messages)
+    payload = {"model": model, "max_tokens": 8192, "messages": full}
+    if tools:
+        payload["tools"] = tools
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body,
+        headers={"Authorization": f"Bearer {api_key}",
+                 "content-type": "application/json"})
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    return data
+
+
+def _extract_reasoning(data: dict) -> str:
+    """从 API 响应中提取推理内容（DeepSeek 的 reasoning_content）。"""
+    try:
+        delta = data.get("choices", [{}])[0].get("delta", {})
+        if "reasoning_content" in delta:
+            return delta["reasoning_content"] or ""
+        # 非流式响应
+        msg = data.get("choices", [{}])[0].get("message", {})
+        if "reasoning_content" in msg:
+            return msg["reasoning_content"] or ""
+    except Exception:
+        pass
+    return ""
+
+
+def _make_streaming_request(agent, messages: list, system_prompt: str = "",
+                             on_reasoning=None, on_content=None) -> str:
+    """流式请求，边接收边回调 reasoning 和 content。"""
+    import urllib.request, urllib.error, json as _json
+    config = agent.config
+    api_key = config.get("api_key", "")
+    model = config.get("model", "deepseek-v4-flash")
+    api_url = config.get("api_url", "https://api.deepseek.com")
+
+    url = api_url.rstrip("/") + "/chat/completions"
+    full = []
+    if system_prompt and system_prompt.strip():
+        full.append({"role": "system", "content": system_prompt})
+    full.extend(messages)
+
+    payload = {"model": model, "max_tokens": 8192, "messages": full, "stream": True}
+    body = _json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body,
+        headers={"Authorization": f"Bearer {api_key}",
+                 "content-type": "application/json"})
+
+    result_parts = []
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        buffer = ""
+        while True:
+            chunk = resp.read(1).decode("utf-8", errors="replace")
+            if not chunk:
+                break
+            buffer += chunk
+            if buffer.endswith("\n\n"):
+                for line in buffer.strip().split("\n"):
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
+                        try:
+                            data = _json.loads(data_str)
+                            delta = data.get("choices", [{}])[0].get("delta", {})
+                            if "reasoning_content" in delta and delta["reasoning_content"] and on_reasoning:
+                                on_reasoning(delta["reasoning_content"])
+                            if "content" in delta and delta["content"]:
+                                result_parts.append(delta["content"])
+                                if on_content:
+                                    on_content(delta["content"])
+                        except _json.JSONDecodeError:
+                            pass
+                buffer = ""
+
+    return "".join(result_parts)
+
+
 def _ensure_work_args(tool_name: str, args: dict):
     """为工具调用注入 work 参数。"""
     if tool_name != "list_works" and "work" not in args:
@@ -283,10 +375,14 @@ def get_proposals_only(agent, message: str, context: str = ""):
     msg = choice.get("message", {})
     content = msg.get("content") or ""
     tool_calls = msg.get("tool_calls", [])
+    reasoning = msg.get("reasoning_content", "") or data.get("choices", [{}])[0].get("message", {}).get("reasoning_content", "")
 
     if not tool_calls:
         agent.history.append({"role": "assistant", "content": content})
         agent._persist()
+        # 如果有推理内容，附在回复前面
+        if reasoning:
+            content = f"<details><summary>推理过程</summary>{reasoning}</details>\n\n{content}"
         return content
 
     # 构建传递用的 messages
@@ -298,7 +394,7 @@ def get_proposals_only(agent, message: str, context: str = ""):
                              for tc in tool_calls]}]
     after.append({"role": "tool", "tool_call_id": "pending", "content": ""})  # placeholder
 
-    return (tool_calls, before, after, system)
+    return (tool_calls, before, after, system, reasoning)
 
 
 def get_final_response(agent, messages: list, system_prompt: str = ""):

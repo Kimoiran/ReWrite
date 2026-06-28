@@ -3,10 +3,13 @@
 from typing import Any
 
 from .base_skill import Skill
-from .character_skills import GetCharactersSkill, CreateCharacterSkill, UpdateCharacterSkill, AddGroupSkill
-from .outline_skills import GetOutlineSkill, UpdateOutlineEntrySkill
-from .timeline_skills import GetTimelineSkill, UpdateTimelineEventSkill
-from .worldview_skills import GetWorldviewSkill, CreateWorldviewEntrySkill
+from .character_skills import (GetCharactersSkill, CreateCharacterSkill, UpdateCharacterSkill,
+                                AddGroupSkill, DeleteCharacterSkill, DeleteGroupSkill)
+from .outline_skills import GetOutlineSkill, UpdateOutlineEntrySkill, DeleteOutlineEntrySkill
+from .chapter_skills import GetChaptersSkill, ReadChapterSkill, UpdateChapterSkill
+from .timeline_skills import GetTimelineSkill, UpdateTimelineEventSkill, DeleteTimelineEventSkill
+from .worldview_skills import (GetWorldviewSkill, CreateWorldviewEntrySkill,
+                                UpdateWorldviewEntrySkill, DeleteWorldviewEntrySkill)
 
 
 def get_all_skills() -> list[Skill]:
@@ -16,12 +19,20 @@ def get_all_skills() -> list[Skill]:
         CreateCharacterSkill(),
         UpdateCharacterSkill(),
         AddGroupSkill(),
+        DeleteCharacterSkill(),
+        DeleteGroupSkill(),
         GetOutlineSkill(),
         UpdateOutlineEntrySkill(),
+        DeleteOutlineEntrySkill(),
         GetTimelineSkill(),
         UpdateTimelineEventSkill(),
+        DeleteTimelineEventSkill(),
         GetWorldviewSkill(),
+        UpdateWorldviewEntrySkill(),
         CreateWorldviewEntrySkill(),
+        GetChaptersSkill(),
+        ReadChapterSkill(),
+        UpdateChapterSkill(),
     ]
 
 

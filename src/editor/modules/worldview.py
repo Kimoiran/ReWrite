@@ -6,7 +6,21 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Optional, List
 
+import shutil as _su
+
 from PySide6.QtCore import Qt, Signal
+
+
+def _rotate_backup(file_path: str, max_keep: int = 20):
+    """滚动备份文件，保留最近 max_keep 份。"""
+    p = Path(file_path)
+    if not p.exists():
+        return
+    existing = sorted(p.parent.glob(p.name + ".bak.*"))
+    while len(existing) >= max_keep:
+        existing.pop(0).unlink(missing_ok=True)
+    next_num = (int(existing[-1].name.rsplit(".", 1)[-1]) + 1) if existing else 1
+    _su.copy2(p, p.parent / f"{p.name}.bak.{next_num}")
 from PySide6.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QPushButton,
@@ -65,6 +79,8 @@ class WorldviewModule(BaseModule):
 
     def save(self):
         try:
+            # 先滚动备份（保留最近 20 份）
+            _rotate_backup(str(self.data_path))
             data = {"entries": [self._to_dict(e) for e in self.entries]}
             self.data_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -73,6 +89,7 @@ class WorldviewModule(BaseModule):
         except OSError as e:
             print(f"保存世界观失败: {e}")
             return False
+
 
     def _find_entry(self, entries, entry_id):
         for e in entries:

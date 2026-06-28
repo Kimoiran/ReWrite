@@ -192,3 +192,77 @@ class AddGroupSkill(Skill):
 
     def summarize(self, result, args=None):
         return f"✅ 已创建分组「{(args or {}).get('name', '')}」"
+
+
+class DeleteCharacterSkill(Skill):
+    @property
+    def name(self) -> str: return "delete_character"
+    @property
+    def description(self) -> str: return "删除指定角色（含其所有数据）"
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "角色名称"},
+            },
+            "required": ["name"],
+        }
+    def execute(self, args, work_name=""):
+        work = _work_path(args.get("work", work_name))
+        data = _load(work / "characters.json")
+        nodes = data.get("nodes") or data.get("characters") or []
+        name = args["name"]
+        def _delete(nodes):
+            for i, n in enumerate(nodes):
+                if not n.get("is_group") and n.get("name") == name:
+                    nodes.pop(i)
+                    return True
+                if n.get("children") and _delete(n["children"]):
+                    return True
+            return False
+        if not _delete(nodes):
+            return {"success": False, "error": f"未找到角色: {name}"}
+        _save(work / "characters.json", {"nodes": nodes})
+        return {"success": True, "name": name}
+    def summarize(self, result, args=None):
+        if result.get("success"):
+            return f"✅ 已删除角色「{(args or {}).get('name', '')}」"
+        return f"❌ 删除失败: {result.get('error')}"
+
+
+class DeleteGroupSkill(Skill):
+    @property
+    def name(self) -> str: return "delete_group"
+    @property
+    def description(self) -> str: return "删除指定分组（含其下所有子条目和角色）"
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "分组名称"},
+            },
+            "required": ["name"],
+        }
+    def execute(self, args, work_name=""):
+        work = _work_path(args.get("work", work_name))
+        data = _load(work / "characters.json")
+        nodes = data.get("nodes") or data.get("characters") or []
+        name = args["name"]
+        def _delete(nodes):
+            for i, n in enumerate(nodes):
+                if n.get("is_group") and n.get("name") == name:
+                    nodes.pop(i)
+                    return True
+                if n.get("children") and _delete(n["children"]):
+                    return True
+            return False
+        if not _delete(nodes):
+            return {"success": False, "error": f"未找到分组: {name}"}
+        _save(work / "characters.json", {"nodes": nodes})
+        return {"success": True, "name": name}
+    def summarize(self, result, args=None):
+        if result.get("success"):
+            return f"✅ 已删除分组「{(args or {}).get('name', '')}」"
+        return f"❌ 删除失败: {result.get('error')}"

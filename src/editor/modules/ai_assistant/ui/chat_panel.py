@@ -56,7 +56,7 @@ class MessageBubble(QFrame):
 
 
 class LoadingBubble(QFrame):
-    """加载动画气泡。"""
+    """加载动画气泡，支持显示 AI 推理过程。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -82,7 +82,34 @@ class LoadingBubble(QFrame):
         """)
         layout.addWidget(self.dots_label)
 
-        # 动画：循环显示 . → .. → ...
+        # 推理过程显示区（可滚动，默认隐藏）
+        self.reasoning_scroll = QScrollArea()
+        self.reasoning_scroll.setWidgetResizable(True)
+        self.reasoning_scroll.setMaximumHeight(160)
+        self.reasoning_scroll.setVisible(False)
+        self.reasoning_scroll.setStyleSheet("""
+            QScrollArea {
+                border: 1px solid #FFE0B2;
+                border-radius: 6px;
+                background-color: #FFF8E1;
+                margin-top: 2px;
+            }
+        """)
+        self.reasoning_content = QLabel("")
+        self.reasoning_content.setWordWrap(True)
+        self.reasoning_content.setStyleSheet("""
+            QLabel {
+                padding: 6px 10px;
+                font-size: 11px;
+                color: #795548;
+                background: transparent;
+                border: none;
+            }
+        """)
+        self.reasoning_scroll.setWidget(self.reasoning_content)
+        layout.addWidget(self.reasoning_scroll)
+
+        # 动画
         self._dot_count = 0
         self._timer = QTimer(self)
         self._timer.setInterval(400)
@@ -95,12 +122,111 @@ class LoadingBubble(QFrame):
 
     def stop(self):
         self._timer.stop()
-        self.hide()
+
+    def set_reasoning(self, text: str):
+        """显示 AI 的推理过程。"""
+        if text.strip():
+            current = self.reasoning_content.text()
+            # 增量追加，避免截断
+            self.reasoning_content.setText(f"🧠 {current}{text}")
+            self.reasoning_scroll.setVisible(True)
+        else:
+            self.reasoning_scroll.setVisible(False)
 
     def _tick(self):
         self._dot_count = (self._dot_count % 3) + 1
         dots = "." * self._dot_count
         self.dots_label.setText(f"  思考中{dots}")
+
+
+class ConfirmBubble(QFrame):
+    """确认气泡 — 嵌入聊天框，带允许/取消按钮。确认后变灰显示已确认。"""
+
+    confirmed = Signal(list)
+    cancelled = Signal()
+
+    def __init__(self, descriptions: list[str], tool_calls: list, parent=None):
+        super().__init__(parent)
+        self.tool_calls = tool_calls
+        self._confirmed = False
+        self.setStyleSheet("border: none;")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+
+        self.role_label = QLabel("AI 请求操作")
+        self.role_label.setStyleSheet("font-weight: bold; font-size: 11px; color: #FF8F00; border: none;")
+        layout.addWidget(self.role_label)
+
+        self.bg_frame = QFrame()
+        self.bg_frame.setStyleSheet("""
+            QFrame {
+                background-color: #FFF8E1;
+                border: 1px solid #FFE0B2;
+                border-radius: 8px;
+                padding: 8px;
+            }
+        """)
+        bg_layout = QVBoxLayout(self.bg_frame)
+        bg_layout.setSpacing(4)
+
+        for desc in descriptions:
+            label = QLabel(f"  • {desc}")
+            label.setWordWrap(True)
+            label.setStyleSheet("color: #795548; font-size: 12px; border: none;")
+            bg_layout.addWidget(label)
+
+        layout.addWidget(self.bg_frame)
+
+        # 按钮行
+        self.btn_row = QHBoxLayout()
+        self.btn_row.addStretch()
+
+        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn.setStyleSheet("""
+            QPushButton { font-size: 11px; padding: 4px 14px;
+                border: 1px solid #d0d0d0; border-radius: 4px;
+                background: #ffffff; color: #666; }
+        """)
+        self.cancel_btn.clicked.connect(self.cancelled.emit)
+        self.btn_row.addWidget(self.cancel_btn)
+
+        self.confirm_btn = QPushButton("允许")
+        self.confirm_btn.setStyleSheet("""
+            QPushButton { font-size: 11px; padding: 4px 14px;
+                border: none; border-radius: 4px;
+                background: #2196F3; color: white; font-weight: bold; }
+        """)
+        self.confirm_btn.clicked.connect(self._on_confirm)
+        self.btn_row.addWidget(self.confirm_btn)
+
+        layout.addLayout(self.btn_row)
+
+    def _on_confirm(self):
+        """标记已确认，禁用按钮，变色。"""
+        self._confirmed = True
+        self.role_label.setText("✅ 已确认")
+        self.role_label.setStyleSheet("font-weight: bold; font-size: 11px; color: #4CAF50; border: none;")
+        self.bg_frame.setStyleSheet("""
+            QFrame {
+                background-color: #E8F5E9;
+                border: 1px solid #A5D6A7;
+                border-radius: 8px;
+                padding: 8px;
+            }
+        """)
+        for i in range(self.bg_frame.layout().count()):
+            w = self.bg_frame.layout().itemAt(i).widget()
+            if isinstance(w, QLabel):
+                w.setStyleSheet("color: #2E7D32; font-size: 12px; border: none;")
+        self.cancel_btn.setVisible(False)
+        self.confirm_btn.setText("执行中...")
+        self.confirm_btn.setEnabled(False)
+        self.confirm_btn.setStyleSheet("""
+            QPushButton { font-size: 11px; padding: 4px 14px;
+                border: none; border-radius: 4px;
+                background: #A5D6A7; color: #1B5E20; }
+        """)
+        self.confirmed.emit(self.tool_calls)
 
 
 class ScopeChip(QCheckBox):
@@ -318,6 +444,13 @@ class ChatPanel(QDockWidget):
     def _apply_preset(self, scope_list: list):
         for sid, chip in self.scope_chips.items():
             chip.setChecked(sid in scope_list)
+
+    def add_confirm_bubble(self, descriptions: list, tool_calls: list) -> ConfirmBubble:
+        """添加确认气泡到聊天框。"""
+        self.hide_loading()
+        bubble = ConfirmBubble(descriptions, tool_calls)
+        self.messages_layout.addWidget(bubble)
+        return bubble
 
     def enable_send(self):
         self.send_btn.setEnabled(True)

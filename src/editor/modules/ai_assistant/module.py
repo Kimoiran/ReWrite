@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import urllib.error
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QDockWidget, QMessageBox
 
@@ -208,80 +209,244 @@ class AIAssistantModule(BaseModule):
     def _do_chat(self, message: str, context: str):
         from .worker import ToolProposalWorker
 
+        # 走工具提案路径（含工具定义）
         self._proposal_worker = ToolProposalWorker(self.agent, message, context)
         self._proposal_worker.proposals_ready.connect(self._on_tool_proposals)
         self._proposal_worker.text_response.connect(self._on_ai_response)
+        self._proposal_worker.reasoning_ready.connect(self._set_loading_reasoning)
         self._proposal_worker.api_error.connect(self._on_ai_error)
         self._proposal_worker.start()
 
+    def _set_loading_reasoning(self, text: str):
+        """在加载气泡中显示推理内容。"""
+        if hasattr(self.chat_panel, '_loading_bubble') and self.chat_panel._loading_bubble:
+            self.chat_panel._loading_bubble.set_reasoning(text)
+
     def _on_tool_proposals(self, tool_calls, before, after, system):
-        """AI 返回了工具调用提案，在主线程弹出确认对话框。"""
-        from PySide6.QtWidgets import QMessageBox, QApplication as _QA
+        """AI 返回了工具调用提案，在聊天气泡中嵌入确认按钮。"""
         from .skills.registry import get_skill, execute_skill
-        from .providers import get_final_response
+        from .providers import _ensure_work_args, _describe_tool
         import json as _j
 
-        # 构建描述信息
-        descriptions = []
+        # 构建描述
+        descs = []
         for tc in tool_calls:
             name = tc["function"]["name"]
             try:
-                args = _j.loads(tc["function"]["arguments"])
+                args = _j.loads(tc.get("function", {}).get("arguments", "{}"))
             except Exception:
                 args = {}
-            from .providers import _ensure_work_args
             _ensure_work_args(name, args)
             skill = get_skill(name)
             if skill and hasattr(skill, "summarize"):
-                desc = skill.summarize({"success": True}, args)
+                descs.append(skill.summarize({"success": True}, args))
             else:
-                desc = f"执行 {name}"
-            descriptions.append(desc)
+                descs.append(f"执行 {name}")
 
-        # 确认对话框
-        lines = ["AI 提议以下操作，是否允许？\n"]
-        for d in descriptions:
-            lines.append(f"  • {d}")
-        lines.append("")
+        # 嵌入确认气泡
+        bubble = self.chat_panel.add_confirm_bubble(descs, tool_calls)
+        bubble.confirmed.connect(
+            lambda tcs: self._execute_and_continue(tcs, after, system))
+        bubble.cancelled.connect(self._on_cancel)
 
-        reply = QMessageBox.question(
-            _QA.activeWindow(), "确认 AI 操作",
-            "\n".join(lines),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
+    def _on_cancel(self):
+        """用户取消了操作。"""
+        self.chat_panel.enable_send()
 
-        if reply != QMessageBox.StandardButton.Yes:
-            self.chat_panel.hide_loading()
-            self.chat_panel.add_message("assistant", "已取消 AI 操作")
-            self.chat_panel.enable_send()
-            return
+    def _show_diff_dialog(self, old_text: str, new_text: str, chapter_path: str) -> bool:
+        """显示章节修改 diff 对比框。返回 True=接受 False=拒绝。"""
+        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+                                       QPushButton, QSplitter, QTextBrowser, QApplication as _QA)
+        from PySide6.QtCore import Qt as _Qt
 
-        # 执行工具（主线程）
-        self.chat_panel.show_loading()
+        dialog = QDialog(_QA.activeWindow())
+        dialog.setWindowTitle("确认章节修改")
+        dialog.setMinimumSize(700, 450)
+        dialog.resize(900, 600)
+        layout = QVBoxLayout(dialog)
+
+        title = QLabel(f"章节修改确认: {chapter_path}")
+        title.setStyleSheet("font-size: 14px; font-weight: bold; padding: 4px 0;")
+        layout.addWidget(title)
+
+        splitter = QSplitter(_Qt.Orientation.Horizontal)
+
+        # 旧版（红）
+        old_widget = QTextBrowser()
+        old_widget.setHtml(old_text)
+        old_widget.setStyleSheet("""
+            QTextBrowser { background-color: #FFF5F5; border: 1px solid #FFCDD2;
+                padding: 12px; font-size: 13px; line-height: 1.8; }
+        """)
+        old_label = QLabel("旧版")
+        old_label.setStyleSheet("color: #C62828; font-weight: bold; font-size: 11px;")
+        old_vbox = QVBoxLayout()
+        old_vbox.addWidget(old_label)
+        old_vbox.addWidget(old_widget)
+        old_container = QWidget()
+        old_container.setLayout(old_vbox)
+        splitter.addWidget(old_container)
+
+        # 新版（绿）
+        new_widget = QTextBrowser()
+        new_widget.setHtml(new_text)
+        new_widget.setStyleSheet("""
+            QTextBrowser { background-color: #F1F8E9; border: 1px solid #C8E6C9;
+                padding: 12px; font-size: 13px; line-height: 1.8; }
+        """)
+        new_label = QLabel("新版")
+        new_label.setStyleSheet("color: #2E7D32; font-weight: bold; font-size: 11px;")
+        new_vbox = QVBoxLayout()
+        new_vbox.addWidget(new_label)
+        new_vbox.addWidget(new_widget)
+        new_container = QWidget()
+        new_container.setLayout(new_vbox)
+        splitter.addWidget(new_container)
+
+        layout.addWidget(splitter, stretch=1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        reject_btn = QPushButton("拒绝")
+        reject_btn.setStyleSheet("padding: 8px 24px; border: 1px solid #EF5350; color: #C62828; border-radius: 4px;")
+        reject_btn.clicked.connect(dialog.reject)
+        btn_row.addWidget(reject_btn)
+        accept_btn = QPushButton("接受修改")
+        accept_btn.setStyleSheet("padding: 8px 24px; background: #4CAF50; color: white; font-weight: bold; border-radius: 4px;")
+        accept_btn.clicked.connect(dialog.accept)
+        btn_row.addWidget(accept_btn)
+        layout.addLayout(btn_row)
+
+        return dialog.exec() == QDialog.DialogCode.Accepted
+
+    def _execute_and_continue(self, tool_calls, after, system):
+        """用户确认后执行工具，然后继续 AI 循环。"""
+        from .skills.registry import execute_skill
+        from .providers import _ensure_work_args, _describe_tool
+        from .skills.chapter_skills import UpdateChapterSkill
+        import json as _j
+        from PySide6.QtWidgets import QApplication as _QA
+
         _QA.processEvents()
 
-        after = list(after)
-        after.pop()  # 移除占位符
+        msgs = list(after)
+        if msgs and msgs[-1].get("role") == "tool" and msgs[-1].get("tool_call_id") == "pending":
+            msgs.pop()
         for tc in tool_calls:
             name = tc["function"]["name"]
             try:
-                args = _j.loads(tc["function"]["arguments"])
+                a = _j.loads(tc.get("function", {}).get("arguments", "{}"))
             except Exception:
-                args = {}
-            _ensure_work_args(name, args)
-            result = execute_skill(name, args)
-            from .providers import _describe_tool
-            result_text = _describe_tool(name, args, result)
-            # 注入 tool result
-            after.append({"role": "tool", "tool_call_id": tc["id"], "content": result_text})
+                a = {}
+            _ensure_work_args(name, a)
 
-        # 第二轮：发给 AI 生成最终回复
-        from .worker import ToolExecuteWorker
-        self._execute_worker = ToolExecuteWorker(self.agent, after, system)
-        self._execute_worker.finished.connect(self._on_ai_response)
-        self._execute_worker.error.connect(self._on_ai_error)
-        self._execute_worker.start()
+            if name == "update_chapter":
+                # 章节修改需要 diff 确认
+                skill = UpdateChapterSkill()
+                # 先读取旧内容
+                from .skills._shared import _work_path as _wp
+                work = _wp(a.get("work", ""))
+                chapter = a.get("chapter", "")
+                chapters_dir = work / "chapters"
+                old_content = ""
+                target_path = None
+                if chapters_dir.exists():
+                    for f in chapters_dir.iterdir():
+                        display = f.stem.split("_", 1)[-1] if "_" in f.stem else f.stem
+                        if display == chapter or f.stem == chapter:
+                            old_content = f.read_text(encoding="utf-8")
+                            target_path = f
+                            break
+
+                new_content = a.get("content", "")
+                if old_content and new_content and self._show_diff_dialog(old_content, new_content, str(target_path.name) if target_path else chapter):
+                    # 接受修改，直接写文件
+                    target_path.write_text(new_content, encoding="utf-8")
+                    result = {"success": True, "chapter": chapter}
+                else:
+                    result = {"success": False, "error": "用户拒绝了修改"}
+            else:
+                result = execute_skill(name, a)
+
+            msgs.append({"role": "tool", "tool_call_id": tc["id"],
+                         "content": _describe_tool(name, a, result)})
+            # 显示执行结果
+            from .markdown_render import markdown_to_html
+            self.chat_panel.add_message("assistant",
+                markdown_to_html(f"✅ {_describe_tool(name, a, result)}"))
+            _QA.processEvents()
+
+        # 立即刷新面板
+        self._refresh_panels()
+
+        # 继续 AI 循环
+        self.chat_panel.show_loading()
+        _QA.processEvents()
+        self._tool_loop(msgs, system)
+
+    def _tool_loop(self, messages: list, system: str):
+        """把工具结果发给 AI，后台 HTTP 请求，不阻塞 UI。"""
+        from PySide6.QtCore import QThread, Signal as _Sig
+        from .providers import _make_chat_request, get_openai_tools
+
+        agent_ref = self.agent
+        module_ref = self
+
+        class _LoopWorker(QThread):
+            finished = _Sig(dict)
+            error = _Sig(str)
+            def run(self):
+                try:
+                    data = _make_chat_request(agent_ref, messages, system or "", get_openai_tools())
+                    self.finished.emit(data)
+                except urllib.error.HTTPError as e:
+                    err = ""
+                    try: err = e.read().decode("utf-8", errors="replace")[:200]
+                    except Exception: pass
+                    self.error.emit(f"API 错误 (HTTP {e.code}): {err}")
+                except Exception as e:
+                    self.error.emit(str(e))
+
+        w = _LoopWorker()
+        self._loop_worker = w
+
+        def on_data(data):
+            choice = data.get("choices", [{}])[0]
+            msg = choice.get("message", {})
+            c = msg.get("content") or ""
+            tcs = msg.get("tool_calls", [])
+
+            if not tcs:
+                from .agent import save_chat_history
+                agent_ref.history.append({"role": "assistant", "content": c})
+                save_chat_history(agent_ref.work_name, agent_ref.history)
+                module_ref._on_ai_response(c)
+                return
+
+            messages.append({"role": "assistant", "content": c,
+                "tool_calls": [{"id": tc["id"], "type": "function",
+                                "function": {"name": tc["function"]["name"],
+                                             "arguments": tc["function"]["arguments"]}}
+                               for tc in tcs]})
+
+            from .skills.registry import get_skill
+            from .providers import _ensure_work_args
+            import json as _j
+            module_ref.chat_panel.hide_loading()
+            descs = []
+            for tc in tcs:
+                name = tc["function"]["name"]
+                a = _j.loads(tc.get("function", {}).get("arguments", "{}")) if tc.get("function", {}).get("arguments") else {}
+                _ensure_work_args(name, a)
+                skill = get_skill(name)
+                descs.append(skill.summarize({"success": True}, a) if skill and hasattr(skill, "summarize") else name)
+            module_ref.chat_panel.add_confirm_bubble(descs, tcs).confirmed.connect(
+                lambda tcs2: module_ref._execute_and_continue(tcs2, messages, system))
+
+        w.finished.connect(on_data)
+        w.error.connect(self._on_ai_error)
+        w.start()
+
 
     def _on_ai_response(self, response: str):
         self.chat_panel.hide_loading()
@@ -313,10 +478,10 @@ class AIAssistantModule(BaseModule):
         if not hasattr(p, 'modules'):
             return
         for mod_id, attr in [("characters", "_build_tree"), ("outline", "_build_tree"),
-                              ("timeline", "_refresh")]:
+                              ("timeline", "_refresh"), ("worldview", "_build_tree")]:
             mod = p.modules.get(mod_id)
             if mod and hasattr(mod, 'load'):
-                mod.load()
+                mod.load()  # 从磁盘重载，覆盖旧内存数据
                 dock = p.docks.get(mod_id)
                 if dock and hasattr(dock, attr):
                     getattr(dock, attr)()

@@ -342,6 +342,7 @@ class CharacterDock(QDockWidget):
 
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["分组 / 角色"])
+        self.tree.header().setStretchLastSection(True)
         self.tree.setEditTriggers(
             QTreeWidget.EditTrigger.DoubleClicked | QTreeWidget.EditTrigger.EditKeyPressed
         )

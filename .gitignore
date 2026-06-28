@@ -62,4 +62,11 @@ Desktop.ini
 # Temp test scripts
 scripts/check_*.py
 scripts/test_*.py
+scripts/build_*.py
+scripts/clean_*.py
+scripts/backup.py
 mcp/test_*.py
+
+# MCP server (removed)
+mcp/
+src/mcp_manager.py
