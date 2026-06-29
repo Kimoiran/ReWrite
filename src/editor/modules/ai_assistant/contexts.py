@@ -154,12 +154,24 @@ def _timeline_text(events, depth=0) -> str:
 
 
 def _map_text(nodes: list, routes: list) -> str:
-    """地图概览：名称+类型，不含坐标。"""
-    lines = []
-    root_types = {"country", "region"}
+    """地图概览：树形层级（国家→城市），不含坐标。"""
+    # 重建树形（不修改原节点）
+    id_map = {n.id: n for n in nodes}
+    tree = {n.id: {"node": n, "children": []} for n in nodes}
+    roots = []
     for n in nodes:
-        if n.node_type in root_types or not n.parent_id:
-            lines.append(f"📍 {n.name} ({n.node_type})")
+        tn = tree[n.id]
+        if n.parent_id and n.parent_id in tree:
+            tree[n.parent_id]["children"].append(tn)
+        else:
+            roots.append(tn)
+    # 递归输出
+    lines = []
+    def _walk(ts, depth):
+        for t in ts:
+            lines.append(f"  {'  ' * depth}📍 {t['node'].name} ({t['node'].node_type})")
+            _walk(t["children"], depth + 1)
+    _walk(roots, 0)
     if routes:
         lines.append(f"📌 路线 ({len(routes)} 条): " + ", ".join(r.name for r in routes))
     return "\n".join(lines)

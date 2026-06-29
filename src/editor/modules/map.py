@@ -782,6 +782,7 @@ class MapDock(QDockWidget):
         i_on = nd.get("font_italic", False)
         i_a = m.addAction(f"{'取消斜体' if i_on else '斜体'}")
         m.addSeparator()
+        sp_a = m.addAction("设置所属父节点")
         gr = m.addAction(f"全局节点半径 ({MapNodeItem.NODE_RADIUS})")
         rs_a = m.addAction("重置样式")
         act = m.exec(QCursor.pos())
@@ -790,6 +791,14 @@ class MapDock(QDockWidget):
             new_name, ok = QInputDialog.getText(self, "重命名节点", "新名称:", text=name)
             if ok and new_name.strip():
                 self.module.update_node(nid, name=new_name.strip())
+                self.module.save(); self._build_map()
+        elif act == sp_a:
+            names = [n.name for n in self.module.nodes if n.name and n.id != nid]
+            names.insert(0, "(无父节点)")
+            pname, ok = QInputDialog.getItem(self, "设置父节点", f"选择「{name}」的父节点:", names, 0, False)
+            if ok:
+                pid = "" if pname == "(无父节点)" else (self.module.find_node_id(pname) or "")
+                self.module.update_node(nid, parent_id=pid)
                 self.module.save(); self._build_map()
         elif act == r_a:
             d = QInputDialog(self); d.setWindowTitle("半径")
