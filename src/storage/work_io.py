@@ -18,7 +18,8 @@ def slugify(name: str) -> str:
 
 def create_work(works_dir: Path, title: str, work_type: str = "novel",
                 modules: list = None, git_enabled: bool = True,
-                git_remote: str = "", git_auto_push: bool = False) -> Optional[Path]:
+                git_remote: str = "", git_auto_push: bool = False,
+                date_era: str = "") -> Optional[Path]:
     """创建新作品目录和元数据。返回作品路径，失败返回 None。"""
     dir_name = f"{work_type}-{slugify(title)}"
     work_path = works_dir / dir_name
@@ -45,6 +46,7 @@ def create_work(works_dir: Path, title: str, work_type: str = "novel",
             git_enabled=git_enabled,
             git_remote=git_remote,
             git_auto_push=git_auto_push,
+            date_era=date_era,
         )
         save_meta(work_path / "work.json", meta)
 

@@ -9,7 +9,7 @@ from typing import Optional
 
 
 # 模块 ID 列表
-AVAILABLE_MODULES = ["chapters", "characters", "outline", "timeline", "worldview", "ai_assistant"]
+AVAILABLE_MODULES = ["chapters", "characters", "outline", "timeline", "worldview", "map", "ai_assistant"]
 
 # 模块中文名映射
 MODULE_NAMES = {
@@ -17,6 +17,8 @@ MODULE_NAMES = {
     "characters": "人物设定卡",
     "outline": "大纲",
     "timeline": "时间线",
+    "worldview": "世界观",
+    "map": "地图",
     "ai_assistant": "AI 写作助手",
 }
 
@@ -64,6 +66,7 @@ class WorkMeta:
     total_words: int = 0
     cover_color: str = ""
     cloud_enabled: bool = False
+    date_era: str = ""  # 时间线纪元名，如「神启」「星历」「帝国历」。空=无纪元
 
     def __post_init__(self):
         if isinstance(self.git, dict):
@@ -84,7 +87,8 @@ class WorkMeta:
     @staticmethod
     def new(title: str, work_type: str = "novel",
             modules: list = None, git_enabled: bool = True,
-            git_remote: str = "", git_auto_push: bool = False) -> "WorkMeta":
+            git_remote: str = "", git_auto_push: bool = False,
+            date_era: str = "") -> "WorkMeta":
         now = datetime.now(timezone.utc).isoformat()
         if modules is None:
             modules = ["chapters"]
@@ -105,6 +109,7 @@ class WorkMeta:
             created=now,
             updated=now,
             cover_color=random.choice(COVER_COLORS),
+            date_era=date_era,
         )
 
 

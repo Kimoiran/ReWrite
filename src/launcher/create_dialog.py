@@ -42,6 +42,10 @@ class CreateWorkDialog(QDialog):
             self.type_combo.addItem(WORK_TYPE_NAMES.get(wt, wt), wt)
         basic_layout.addRow("作品类型:", self.type_combo)
 
+        self.era_edit = QLineEdit()
+        self.era_edit.setPlaceholderText("如「神启」「星历」，留空则时间线用纯数字排序")
+        basic_layout.addRow("纪元名:", self.era_edit)
+
         layout.addWidget(basic_group)
 
         # ── 模块选择 ──
@@ -301,6 +305,7 @@ class CreateWorkDialog(QDialog):
             "git_enabled": git_enabled,
             "git_remote": git_remote,
             "git_auto_push": git_auto_push,
+            "date_era": self.era_edit.text().strip(),
         }
         self.accept()
 

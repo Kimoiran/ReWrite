@@ -31,12 +31,13 @@ class MessageBubble(QFrame):
         self.browser.setOpenExternalLinks(True)
         self.browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.browser.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        # 根据内容计算高度
+        self.browser.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
+        # 根据内容计算高度（用 480 作为默认宽度，避免布局未完成时的窄 fallback）
         doc = self.browser.document()
-        doc.setTextWidth(self.browser.viewport().width() if self.browser.viewport().width() > 100 else 260)
+        doc.setTextWidth(480)
         content_height = int(doc.size().height()) + 16
-        self.browser.setFixedHeight(max(40, min(content_height, 400)))
+        self.browser.setMinimumHeight(max(40, min(content_height, 400)))
+        QTimer.singleShot(50, lambda: self._resize_to_content())
         bg = "#E3F2FD" if role == "user" else "#F5F7FA"
         self.browser.setStyleSheet(f"""
             QTextBrowser {{
@@ -53,6 +54,15 @@ class MessageBubble(QFrame):
 
     def set_content(self, html: str):
         self.browser.setHtml(html)
+
+    def _resize_to_content(self):
+        """等布局稳定后根据实际宽度重新计算高度。"""
+        w = self.browser.viewport().width()
+        if w > 100:
+            doc = self.browser.document()
+            doc.setTextWidth(w)
+            h = int(doc.size().height()) + 16
+            self.browser.setMinimumHeight(max(40, min(h, 400)))
 
 
 class LoadingBubble(QFrame):
@@ -278,9 +288,13 @@ class ChatPanel(QDockWidget):
             QDockWidget.DockWidgetFeature.DockWidgetFloatable |
             QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
-        self.setMinimumWidth(280)
+        self.setMinimumWidth(440)
         self._loading_bubble = None
         self._setup_ui()
+        self._scroll_timer = QTimer(self)
+        self._scroll_timer.setSingleShot(True)
+        self._scroll_timer.setInterval(10)
+        self._scroll_timer.timeout.connect(self._scroll_to_bottom)
 
     def _setup_ui(self):
         widget = QWidget()
@@ -302,7 +316,7 @@ class ChatPanel(QDockWidget):
 
         row2 = QHBoxLayout()
         row2.setSpacing(4)
-        for sid, label, default in [("characters", "人物设定卡", True), ("timeline", "时间线", False), ("worldview", "世界观", False), ("work_meta", "作品信息", False)]:
+        for sid, label, default in [("characters", "人物设定卡", True), ("timeline", "时间线", False), ("worldview", "世界观", True), ("map", "🗺️ 地图", True), ("work_meta", "作品信息", False)]:
             chip = ScopeChip(sid, label, default); self.scope_chips[sid] = chip; row2.addWidget(chip)
         layout.addLayout(row2)
 
@@ -310,9 +324,9 @@ class ChatPanel(QDockWidget):
         preset_layout = QHBoxLayout()
         preset_layout.setSpacing(4)
         for label, scope_list in [
-            ("写作助手", ["current_chapter", "outline", "characters"]),
-            ("深度分析", ["current_chapter", "outline", "characters", "timeline", "work_meta"]),
-            ("灵感发散", ["outline", "characters", "timeline"]),
+            ("写作助手", ["current_chapter", "outline", "characters", "worldview", "map"]),
+            ("深度分析", ["current_chapter", "outline", "characters", "timeline", "worldview", "map", "work_meta"]),
+            ("灵感发散", ["outline", "characters", "timeline", "worldview", "map"]),
         ]:
             btn = QPushButton(label)
             btn.setStyleSheet("font-size: 10px; padding: 2px 8px; border: 1px solid #e0e8f0; border-radius: 8px; background: #f5f7fa; color: #5a6a7a;")
@@ -404,19 +418,25 @@ class ChatPanel(QDockWidget):
         else:
             self.memory_label.setText("")
 
+    def _scroll_to_bottom(self):
+        """滚动消息区域到底部（布局完成后再滚动一次，确保准确）。"""
+        scroll_area = self.findChild(QScrollArea)
+        if scroll_area:
+            sb = scroll_area.verticalScrollBar()
+            sb.setValue(sb.maximum())
+            # 延迟再滚一次，等布局稳定
+            QTimer.singleShot(100, lambda: sb.setValue(sb.maximum()))
+
     def add_message(self, role: str, content: str):
         bubble = MessageBubble(role, content)
         self.messages_layout.addWidget(bubble)
-        # 自动滚动到底部
-        scroll_area = self.findChild(QScrollArea)
-        if scroll_area:
-            QTimer.singleShot(50, lambda: scroll_area.verticalScrollBar().setValue(
-                scroll_area.verticalScrollBar().maximum()))
+        self._scroll_to_bottom()
 
     def show_loading(self):
         self._loading_bubble = LoadingBubble()
         self.messages_layout.addWidget(self._loading_bubble)
         self._loading_bubble.start()
+        self._scroll_to_bottom()
         QApplication.processEvents()
 
     def hide_loading(self):
@@ -450,6 +470,7 @@ class ChatPanel(QDockWidget):
         self.hide_loading()
         bubble = ConfirmBubble(descriptions, tool_calls)
         self.messages_layout.addWidget(bubble)
+        self._scroll_to_bottom()
         return bubble
 
     def enable_send(self):

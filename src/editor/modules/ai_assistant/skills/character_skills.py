@@ -4,7 +4,7 @@ import uuid
 from typing import Any
 
 from .base_skill import Skill
-from ._shared import _work_path, _load, _save
+from ._shared import _work_path, _load, _save, _fmt_nodes
 
 
 def _find_group(nodes, name):
@@ -18,19 +18,122 @@ def _find_group(nodes, name):
     return None
 
 
-class GetCharactersSkill(Skill):
+def _collect_char_names(nodes) -> list[str]:
+    """收集所有角色名称（用于错误提示辅助 AI 自修正）。"""
+    names = []
+    def _walk(ns):
+        for n in ns:
+            if not n.get("is_group"):
+                names.append(n.get("name", ""))
+            if n.get("children"):
+                _walk(n["children"])
+    _walk(nodes)
+    return names
+
+
+class GetCharacterGroupsSkill(Skill):
     @property
-    def name(self) -> str: return "get_characters"
+    def name(self) -> str: return "get_character_groups"
     @property
-    def description(self) -> str: return "获取人物设定卡（所有角色和分组）"
+    def description(self) -> str: return "获取人物分组列表（仅分组名和各组角色数，不含详细字段）"
     @property
     def input_schema(self) -> dict:
         return {"type": "object", "properties": {}, "required": []}
     def execute(self, args, work_name=""):
-        return _load(_work_path(args.get("work", work_name)) / "characters.json")
+        data = _load(_work_path(args.get("work", work_name)) / "characters.json")
+        nodes = data.get("nodes") or data.get("characters") or []
+        groups = []
+        def _walk(ns, depth=0):
+            for n in ns:
+                if n.get("is_group"):
+                    # 统计该分组下所有角色（含子分组递归）
+                    def _count(nn):
+                        c = 0
+                        for x in nn:
+                            if not x.get("is_group"):
+                                c += 1
+                            if x.get("children"):
+                                c += _count(x["children"])
+                        return c
+                    groups.append({
+                        "name": n.get("name", ""),
+                        "count": _count(n.get("children", [])),
+                        "depth": depth,
+                    })
+                    _walk(n.get("children", []), depth + 1)
+        _walk(nodes)
+        return {"groups": groups, "total_groups": len(groups)}
+    def summarize(self, result, args=None):
+        gs = result.get("groups", [])
+        return f"共 {result.get('total_groups', 0)} 个分组：" + "、".join(f"{g['name']}({g['count']}人)" for g in gs)
+
+
+class GetCharactersSkill(Skill):
+    @property
+    def name(self) -> str: return "get_characters"
+    @property
+    def description(self) -> str: return "获取人物设定卡（可指定分组过滤）"
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "group": {"type": "string", "description": "（可选）分组名称，仅返回该分组下的角色"},
+            },
+            "required": [],
+        }
+    def execute(self, args, work_name=""):
+        data = _load(_work_path(args.get("work", work_name)) / "characters.json")
+        nodes = data.get("nodes") or data.get("characters") or []
+        group = args.get("group", "").strip()
+        if group:
+            parent = _find_group(nodes, group)
+            if parent:
+                result = {"nodes": _fmt_nodes(parent.get("children", []), {"appearance","personality","background","goals","notes"}), "group": group, "count": len(parent.get("children", []))}
+                return result
+            return {"nodes": [], "group": group, "count": 0, "warning": f"未找到分组: {group}"}
+        return {"nodes": _fmt_nodes(nodes, {"appearance","personality","background","goals","notes"})}
 
     def summarize(self, result, args=None):
-        return "已读取人物设定卡"
+        g = args.get("group", "") if args else ""
+        nodes = result.get("nodes", [])
+        if g:
+            return f"已读取分组「{g}」({result.get('count', 0)} 人)【完整数据】：\n" + self._compact(nodes, full=True)
+        return "已读取人物设定卡（概览）：\n" + self._compact(nodes, full=False)
+
+    @staticmethod
+    def _compact(nodes, indent=0, full=False) -> str:
+        """生成人物数据概览。
+
+        full=True（指定分组时）：含所有字段的完整数据。
+        full=False（全部角色时）：仅名称/年龄/身份概览。
+        """
+        lines = []
+        prefix = "  " * indent
+        for n in nodes:
+            if n.get("is_group"):
+                lines.append(f"{prefix}📁 {n['name']}")
+                children = n.get("children", [])
+                if children:
+                    sub = GetCharactersSkill._compact(children, indent + 1, full)
+                    lines.append(sub)
+            else:
+                name = n.get("name", "?")
+                age = n.get("age", "")
+                occ = n.get("occupation", "")
+                tag = f" ({age}, {occ})" if age and occ else f" ({age or occ})" if (age or occ) else ""
+                lines.append(f"{prefix}👤 {name}{tag}")
+                if full:
+                    flags = []
+                    for f in ("appearance", "personality", "background", "goals", "notes"):
+                        v = n.get(f, "")
+                        if v:
+                            short = v.replace("\n", " ").replace("|", "丨")
+                            flags.append(f"【{f}】{short}")
+                    if flags:
+                        for flag in flags:
+                            lines.append(f"{prefix}  {flag}")
+        return "\n".join(lines)
 
 
 class CreateCharacterSkill(Skill):
@@ -145,7 +248,8 @@ class UpdateCharacterSkill(Skill):
 
         node = _find(nodes)
         if not node:
-            return {"success": False, "error": f"未找到角色: {name}"}
+            existing = _collect_char_names(nodes)
+            return {"success": False, "error": f"未找到角色: {name}", "existing": existing}
         old = node.get(field, "")
         node[field] = value
         _save(work / "characters.json", {"nodes": nodes})
@@ -157,7 +261,9 @@ class UpdateCharacterSkill(Skill):
         v = (args or {}).get("value", "")
         if result.get("success"):
             return f"✅ 已将「{n}」的「{f}」修改为「{v}」"
-        return f"❌ 修改失败: {result.get('error')}"
+        existing = result.get("existing", [])
+        hint = f"。现有角色: {', '.join(existing)}" if existing else ""
+        return f"❌ 修改失败: {result.get('error')}{hint}"
 
 
 class AddGroupSkill(Skill):
@@ -222,13 +328,16 @@ class DeleteCharacterSkill(Skill):
                     return True
             return False
         if not _delete(nodes):
-            return {"success": False, "error": f"未找到角色: {name}"}
+            existing = _collect_char_names(nodes)
+            return {"success": False, "error": f"未找到角色: {name}", "existing": existing}
         _save(work / "characters.json", {"nodes": nodes})
         return {"success": True, "name": name}
     def summarize(self, result, args=None):
         if result.get("success"):
             return f"✅ 已删除角色「{(args or {}).get('name', '')}」"
-        return f"❌ 删除失败: {result.get('error')}"
+        existing = result.get("existing", [])
+        hint = f"。现有角色: {', '.join(existing)}" if existing else ""
+        return f"❌ 删除失败: {result.get('error')}{hint}"
 
 
 class DeleteGroupSkill(Skill):

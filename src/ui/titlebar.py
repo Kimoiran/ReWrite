@@ -5,13 +5,15 @@ from PySide6.QtGui import QFont, QPainter, QColor, QPen, QBrush
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 
-class MacButton(QPushButton):
-    def __init__(self, base_color, hover_color, symbol, parent=None):
+class WinButton(QPushButton):
+    """Windows 风格标题栏按钮：46x30 矩形，黑色图标，悬停有背景色。"""
+
+    def __init__(self, symbol, hover_color="#e0e0e0", close=False, parent=None):
         super().__init__(parent)
-        self._base = base_color
         self._hover = hover_color
         self._sym = symbol
-        self.setFixedSize(14, 14)
+        self._close = close
+        self.setFixedSize(46, 30)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet("border: none; background: transparent;")
 
@@ -19,16 +21,14 @@ class MacButton(QPushButton):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         is_hover = self.underMouse()
-        c = QColor(self._hover if is_hover else self._base)
-        p.setBrush(QBrush(c))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(self.rect().adjusted(1, 1, -1, -1))
         if is_hover:
-            p.setPen(QPen(QColor(255, 255, 255, 200), 1))
-            f = QFont()
-            f.setPointSize(7)
-            p.setFont(f)
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._sym)
+            p.fillRect(self.rect(), QColor(self._hover))
+        icon_color = "#ffffff" if (is_hover and self._close) else "#1a1a1a"
+        p.setPen(QPen(QColor(icon_color), 1))
+        f = QFont()
+        f.setPointSize(9)
+        p.setFont(f)
+        p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._sym)
 
 
 class TitleBar(QWidget):
@@ -60,17 +60,16 @@ class TitleBar(QWidget):
         layout.addWidget(self.title_label)
         layout.addStretch()
 
-        self.min_btn = MacButton("#FEBC2E", "#D6A020", "─")
-        self.max_btn = MacButton("#28C840", "#1FA832", "□")
-        self.close_btn = MacButton("#FF5F57", "#E0443E", "✕")
+        self.min_btn = WinButton("─")
+        self.max_btn = WinButton("□")
+        self.close_btn = WinButton("✕", hover_color="#e81123", close=True)
 
         m = QHBoxLayout()
-        m.setSpacing(6)
+        m.setSpacing(0)
         m.addWidget(self.min_btn)
         m.addWidget(self.max_btn)
         m.addWidget(self.close_btn)
         layout.addLayout(m)
-        layout.addSpacing(4)
 
         self.close_btn.clicked.connect(self.close_requested.emit)
         self.min_btn.clicked.connect(self.minimize_requested.emit)

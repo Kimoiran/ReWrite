@@ -23,7 +23,7 @@ class SaveEngine(QObject):
         self.work_path = work_path
         self.autosave_dir = work_path / ".autosave"
         self.snapshot_dir = self.autosave_dir / "snapshots"
-        self._max_snapshots = 10
+        self._max_snapshots = 20
         self._last_snapshot_time = datetime.now()
 
         self.autosave_dir.mkdir(parents=True, exist_ok=True)
@@ -69,10 +69,12 @@ class SaveEngine(QObject):
                 pass
 
     def manual_snapshot(self, path: str, html: str):
-        """手动保存（Ctrl+S）：立即创建快照。"""
+        """手动保存（Ctrl+S）：立即创建快照，自动清理旧快照。"""
+        stem = Path(path).stem
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        fname = f"{Path(path).stem}.{timestamp}.html"
+        fname = f"{stem}.{timestamp}.html"
         try:
             (self.snapshot_dir / fname).write_text(html, encoding="utf-8")
+            self._cleanup_old(stem)
         except OSError:
             pass

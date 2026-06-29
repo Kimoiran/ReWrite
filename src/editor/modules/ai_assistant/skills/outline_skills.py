@@ -3,7 +3,7 @@
 from typing import Any
 
 from .base_skill import Skill
-from ._shared import _work_path, _load, _save
+from ._shared import _work_path, _load, _save, _fmt_nodes
 
 
 def _find_entry(entries, name):
@@ -26,9 +26,30 @@ class GetOutlineSkill(Skill):
     def input_schema(self) -> dict:
         return {"type": "object", "properties": {}, "required": []}
     def execute(self, args, work_name=""):
-        return _load(_work_path(args.get("work", work_name)) / "outline.json")
+        return _fmt_nodes(_load(_work_path(args.get("work", work_name)) / "outline.json"), {"content"})
     def summarize(self, result, args=None):
-        return "已读取大纲"
+        entries = result.get("entries", [])
+        def _count(ns):
+            cnt = 0
+            for e in ns:
+                cnt += 1
+                if e.get("children"):
+                    cnt += _count(e["children"])
+            return cnt
+        total = _count(entries)
+        if not entries:
+            return "大纲为空"
+        # 仅列出标题和状态
+        lines = []
+        def _walk(ns, depth):
+            for e in ns:
+                s = e.get("status", "待写")
+                tag = "✔" if s == "已完成" else ">" if s == "写作中" else " "
+                lines.append(f"  {'  ' * depth}[{tag}] {e.get('title', '')}")
+                if e.get("children"):
+                    _walk(e["children"], depth + 1)
+        _walk(entries, 0)
+        return f"大纲共 {total} 条：\n" + "\n".join(lines)
 
 
 class UpdateOutlineEntrySkill(Skill):

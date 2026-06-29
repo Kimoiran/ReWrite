@@ -244,6 +244,7 @@ class LauncherWindow(QWidget):
                 git_enabled=data["git_enabled"],
                 git_remote=data["git_remote"],
                 git_auto_push=data["git_auto_push"],
+                date_era=data.get("date_era", ""),
             )
             if result:
                 self._refresh()

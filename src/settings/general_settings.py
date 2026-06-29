@@ -17,7 +17,7 @@ DEFAULT_SETTINGS = {
     "autosave_delay": 3000,
     "autosave_enabled": True,
     "snapshot_enabled": True,
-    "max_snapshots": 10,
+    "max_snapshots": 20,
     "font_family": "Microsoft YaHei UI",
     "font_size": 14,
     "auto_git_status": True,
@@ -118,7 +118,7 @@ class GeneralSettingsPage(QWidget):
 
         self.snapshot_spin = QSpinBox()
         self.snapshot_spin.setRange(3, 50)
-        self.snapshot_spin.setValue(self.settings.get("max_snapshots", 10))
+        self.snapshot_spin.setValue(self.settings.get("max_snapshots", 20))
         autosave_layout.addRow("保留快照数:", self.snapshot_spin)
 
         layout.addWidget(autosave_group)

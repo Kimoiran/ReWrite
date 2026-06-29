@@ -3,19 +3,23 @@
 from typing import Any
 
 from .base_skill import Skill
-from .character_skills import (GetCharactersSkill, CreateCharacterSkill, UpdateCharacterSkill,
-                                AddGroupSkill, DeleteCharacterSkill, DeleteGroupSkill)
+from .character_skills import (GetCharacterGroupsSkill, GetCharactersSkill, CreateCharacterSkill,
+                                UpdateCharacterSkill, AddGroupSkill, DeleteCharacterSkill, DeleteGroupSkill)
 from .outline_skills import GetOutlineSkill, UpdateOutlineEntrySkill, DeleteOutlineEntrySkill
 from .chapter_skills import (GetChaptersSkill, ReadChapterSkill, CreateChapterSkill,
                                 UpdateChapterSkill, RenameChapterSkill, DeleteChapterSkill)
-from .timeline_skills import GetTimelineSkill, UpdateTimelineEventSkill, DeleteTimelineEventSkill
+from .timeline_skills import (CreateTimelineEventSkill, GetTimelineSkill,
+                                UpdateTimelineEventSkill, DeleteTimelineEventSkill)
 from .worldview_skills import (GetWorldviewSkill, CreateWorldviewEntrySkill,
                                 UpdateWorldviewEntrySkill, DeleteWorldviewEntrySkill)
+from .map_skills import (GetMapSkill, CreateMapNodeSkill, UpdateMapNodeSkill,
+                          DeleteMapNodeSkill, CreateMapRouteSkill, DeleteMapRouteSkill)
 
 
 def get_all_skills() -> list[Skill]:
     """返回所有注册的技能实例。"""
     return [
+        GetCharacterGroupsSkill(),
         GetCharactersSkill(),
         CreateCharacterSkill(),
         UpdateCharacterSkill(),
@@ -25,12 +29,20 @@ def get_all_skills() -> list[Skill]:
         GetOutlineSkill(),
         UpdateOutlineEntrySkill(),
         DeleteOutlineEntrySkill(),
+        CreateTimelineEventSkill(),
         GetTimelineSkill(),
         UpdateTimelineEventSkill(),
         DeleteTimelineEventSkill(),
         GetWorldviewSkill(),
         UpdateWorldviewEntrySkill(),
         CreateWorldviewEntrySkill(),
+        DeleteWorldviewEntrySkill(),
+        GetMapSkill(),
+        CreateMapNodeSkill(),
+        UpdateMapNodeSkill(),
+        DeleteMapNodeSkill(),
+        CreateMapRouteSkill(),
+        DeleteMapRouteSkill(),
         GetChaptersSkill(),
         ReadChapterSkill(),
         CreateChapterSkill(),

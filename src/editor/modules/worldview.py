@@ -162,14 +162,14 @@ class WorldviewModule(BaseModule):
         self.save()
         return True, f"已修改世界观 {target_name} 的 {field}"
 
-    def to_text(self, max_len=3000) -> str:
+    def to_text(self, max_len=8000) -> str:
         """将世界观渲染为纯文本供 AI 读取。"""
         lines = []
         def _to_text(entries, depth):
             indent = "  " * depth
             for e in entries:
                 import re
-                plain = re.sub(r"<[^>]+>", "", e.content)[:200]
+                plain = re.sub(r"<[^>]+>", "", e.content)[:800]  # 单条上限 800，总上限由 max_len 控制
                 lines.append(f"{indent}# {'#' * depth} {e.title}")
                 if plain.strip():
                     lines.append(f"{indent}  {plain.strip()}")

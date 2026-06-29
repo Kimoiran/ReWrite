@@ -51,7 +51,8 @@ class AIAssistantModule(BaseModule):
         if hasattr(parent, '_work_meta') and parent._work_meta:
             m = parent._work_meta
             wm = {"title": getattr(m, 'title', ''), "work_type": getattr(m, 'work_type', ''),
-                  "tags": getattr(m, 'tags', []), "total_words": getattr(m, 'total_words', 0)}
+                  "tags": getattr(m, 'tags', []), "total_words": getattr(m, 'total_words', 0),
+                  "date_era": getattr(m, 'date_era', '')}
         return collect_context(
             scope=scope.split(","), current_html=html, current_selection=sel,
             chapter_module=self._get_module("chapters"),
@@ -59,6 +60,7 @@ class AIAssistantModule(BaseModule):
             outline_module=self._get_module("outline"),
             timeline_module=self._get_module("timeline"),
             worldview_module=self._get_module("worldview"),
+            map_module=self._get_module("map"),
             work_meta=wm)
 
     def _get_module(self, mod_id):
@@ -176,9 +178,16 @@ class AIAssistantModule(BaseModule):
                     return ""
                 tp = _fo(om.entries)
             elif t == "timeline" and tm:
-                for e in tm.events:
-                    if e.title == ti:
-                        tp = e.id; break
+                def _find_timeline_event(nodes):
+                    for e in nodes:
+                        if e.title == ti:
+                            return e.id
+                        if e.children:
+                            r = _find_timeline_event(e.children)
+                            if r:
+                                return r
+                    return ""
+                tp = _find_timeline_event(tm.events)
             if t in ("chapter", "character", "outline", "timeline"):
                 self.annotation_mgr.add_annotation(target_type=t, target_path=tp or ti,
                     target_title=ti, suggestion=tc, highlight_text=ht, start_pos=sp, end_pos=ep)
@@ -376,8 +385,10 @@ class AIAssistantModule(BaseModule):
                 markdown_to_html(f"✅ {_describe_tool(name, a, result)}"))
             _QA.processEvents()
 
-        # 立即刷新面板
+        # 立即刷新面板并滚动到底部显示结果
         self._refresh_panels()
+        _QA.processEvents()
+        self.chat_panel._scroll_to_bottom()
 
         # 继续 AI 循环
         self.chat_panel.show_loading()
@@ -462,6 +473,7 @@ class AIAssistantModule(BaseModule):
         except Exception:
             pass
         self._refresh_panels()
+        self.chat_panel._scroll_to_bottom()
         self._proposal_worker = None
         self._execute_worker = None
 
@@ -478,7 +490,8 @@ class AIAssistantModule(BaseModule):
         if not hasattr(p, 'modules'):
             return
         for mod_id, attr in [("characters", "_build_tree"), ("outline", "_build_tree"),
-                              ("timeline", "_refresh"), ("worldview", "_build_tree")]:
+                              ("timeline", "_refresh"), ("worldview", "_build_tree"),
+                              ("map", "_refresh")]:
             mod = p.modules.get(mod_id)
             if mod and hasattr(mod, 'load'):
                 mod.load()

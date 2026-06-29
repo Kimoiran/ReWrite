@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QPushButton,
     QInputDialog, QMessageBox, QMenu, QTextEdit,
-    QHeaderView, QLabel,
+    QHeaderView, QLabel, QSplitter,
 )
 
 from .base_module import BaseModule
@@ -299,8 +299,19 @@ class OutlineDock(QDockWidget):
         self.detail_title.setStyleSheet("font-size: 12px; font-weight: bold; color: #1a2332; padding: 0 4px;")
         detail_layout.addWidget(self.detail_title)
 
+        # ── 详情编辑区 ──
+        self.detail_widget = QWidget()
+        detail_layout = QVBoxLayout(self.detail_widget)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(4)
+
+        self.detail_title = QLabel("选中条目查看详情")
+        self.detail_title.setStyleSheet("font-size: 12px; font-weight: bold; color: #1a2332; padding: 0 4px;")
+        detail_layout.addWidget(self.detail_title)
+
         self.detail_edit = QTextEdit()
         self.detail_edit.setPlaceholderText("在此编辑详细内容…")
+        self.detail_edit.setMinimumHeight(120)
         self.detail_edit.setStyleSheet("""
             QTextEdit {
                 border: 1px solid #e0e8f0; border-radius: 4px;
@@ -315,9 +326,8 @@ class OutlineDock(QDockWidget):
         detail_layout.addWidget(self.detail_status_label)
 
         self.detail_widget.setVisible(False)
-        layout.addWidget(self.detail_widget)
 
-        # 树形视图（默认显示）
+        # 树形视图
         self.tree = QTreeWidget()
         self.tree.setColumnCount(1)
         self.tree.setHeaderLabels(["大纲条目"])
@@ -331,7 +341,14 @@ class OutlineDock(QDockWidget):
         self.tree.itemExpanded.connect(self._on_item_expanded)
         self.tree.itemCollapsed.connect(self._on_item_collapsed)
         self.tree.currentItemChanged.connect(self._on_tree_selection_changed)
-        layout.addWidget(self.tree, stretch=1)
+
+        # 用 QSplitter 让树和详情编辑区都可以自由缩放
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.addWidget(self.tree)
+        splitter.addWidget(self.detail_widget)
+        splitter.setStretchFactor(0, 2)  # 树占 2/3
+        splitter.setStretchFactor(1, 1)  # 详情占 1/3
+        layout.addWidget(splitter, stretch=1)
 
         # 文档视图（默认隐藏）
         self.doc_edit = QTextEdit()
