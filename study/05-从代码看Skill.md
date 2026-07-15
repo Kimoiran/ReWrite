@@ -1,4 +1,4 @@
-# 第五课：从代码看 Skill（实战阅读）
+﻿# 第五课：从代码看 Skill（实战阅读）
 
 这一课我们打开真实的代码文件，逐行看懂一个 Skill 是怎么写出来的、怎么注册的、怎么被调用的。
 
@@ -145,7 +145,7 @@ input_schema = {
 
 这里定义了一个可选参数 `group`。AI 可以选择传或者不传。
 
-- 如果用户说「给我看看水神组有哪些角色」→ AI 传 `group: "水神"`
+- 如果用户说「给我看看自然之力组有哪些角色」→ AI 传 `group: "自然之力"`
 - 如果用户说「把所有角色列出来」→ AI 不传 `group`
 
 **execute 方法：**
@@ -352,7 +352,7 @@ AI 输出 {function: {name: "get_characters"}}
 ```python
 from skills.registry import execute_skill
 
-result = execute_skill("get_characters", {"group": "水神"}, "我的小说")
+result = execute_skill("get_characters", {"group": "自然之力"}, "我的小说")
 print(result)  # {'nodes': [...]}
 ```
 
