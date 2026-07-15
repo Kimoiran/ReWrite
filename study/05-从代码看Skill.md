@@ -68,7 +68,7 @@ Path("characters.json").write_text(new_text, encoding="utf-8") # 写入文件
 def execute(self, args, work_name=""):
     # args:   AI 传过来的参数，比如 {"name": "主角", "field": "age", "value": "二十岁"}
     # work_name: 当前作品的名字，比如 "我的小说"
-    
+  
     # 在这里面做：读文件 → 改数据 → 写文件 → 返回结果
     ...
     return {"success": True}
@@ -289,12 +289,12 @@ data = _load(_work_path(work_name) / "characters.json")
 
 这是一个**链式操作**，从右往左看：
 
-| 表达式 | 结果 | 说明 |
-|--------|------|------|
-| `work_name` | `"我的小说"` | AI 传进来或系统自动注入的作品名 |
-| `_work_path(work_name)` | `Path("works/我的小说")` | 找到作品文件夹 |
-| `/ "characters.json"` | `Path("works/我的小说/characters.json")` | 拼接文件名 |
-| `_load(...)` | `{"nodes": [...]}` | 读取文件内容，转成 Python 字典 |
+| 表达式                    | 结果                                       | 说明                            |
+| ------------------------- | ------------------------------------------ | ------------------------------- |
+| `work_name`             | `"我的小说"`                             | AI 传进来或系统自动注入的作品名 |
+| `_work_path(work_name)` | `Path("works/我的小说")`                 | 找到作品文件夹                  |
+| `/ "characters.json"`   | `Path("works/我的小说/characters.json")` | 拼接文件名                      |
+| `_load(...)`            | `{"nodes": [...]}`                       | 读取文件内容，转成 Python 字典  |
 
 `_load` 函数在 `_shared.py` 中定义：
 
@@ -503,6 +503,7 @@ def _find(nodes):
 ```
 
 当你要找 `"主角"` 时：
+
 1. 先在第一层找：`"自然之力"` → 是分组，跳过；`"知识"` → 是分组，跳过
 2. 进 `"自然之力"` 的子节点找：`"主角"` → 名字匹配，不是分组 → **找到了！**
 
@@ -703,9 +704,9 @@ str      # 字符串类型（蓝图）
 
 **核心文件：**
 
-| 文件 | 作用 |
-|------|------|
-| `skills/base_skill.py` | 基类定义（所有 Skill 的模板） |
-| `skills/character_skills.py` | 人物卡 Skill 实现 |
-| `skills/registry.py` | Skill 注册 + 查找 + 执行 |
-| `skills/_shared.py` | 共享工具函数（_load, _save, _work_path 等） |
+| 文件                           | 作用                                        |
+| ------------------------------ | ------------------------------------------- |
+| `skills/base_skill.py`       | 基类定义（所有 Skill 的模板）               |
+| `skills/character_skills.py` | 人物卡 Skill 实现                           |
+| `skills/registry.py`         | Skill 注册 + 查找 + 执行                    |
+| `skills/_shared.py`          | 共享工具函数（_load, _save, _work_path 等） |
