@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 
 from .general_settings import GeneralSettingsPage
 from .ai_settings import AISettingsPage
+from .git_settings import GitSettingsPage
 
 
 class SettingsWindow(QDialog):
@@ -63,9 +64,11 @@ class SettingsWindow(QDialog):
 
         self.general_page = GeneralSettingsPage()
         self.ai_page = AISettingsPage()
+        self.git_page = GitSettingsPage()
 
         self.stacked.addWidget(self.general_page)
         self.stacked.addWidget(self.ai_page)
+        self.stacked.addWidget(self.git_page)
 
         layout.addWidget(self.stacked, stretch=1)
 
@@ -73,6 +76,7 @@ class SettingsWindow(QDialog):
         items = [
             ("通用", "一般设置"),
             ("AI 助手", "API 和模型配置"),
+            ("Git 版本管理", "GitHub Token 与工作空间配置"),
         ]
         for name, desc in items:
             item = QListWidgetItem(f"  {name}")

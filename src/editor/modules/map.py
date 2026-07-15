@@ -615,12 +615,12 @@ class MapModule(BaseModule):
 
 class MapDock(QDockWidget):
     def __init__(self, module: MapModule, parent=None):
-        super().__init__("map", parent)
+        super().__init__("地图", parent)
         self.module = module
         self._setup_ui()
         self._build_map()
         self._fit_view()
-        self.setWindowTitle("map")
+        self.setWindowTitle("地图")
 
     def _setup_ui(self):
         self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea |
@@ -634,22 +634,33 @@ class MapDock(QDockWidget):
         w = QWidget(); lo = QVBoxLayout(w)
         lo.setContentsMargins(4, 4, 4, 4); lo.setSpacing(4)
         tb = QHBoxLayout()
-        for t, fn in [("+", lambda: self._zoom_view(1.25)),
-                      ("-", lambda: self._zoom_view(0.8)),
-                      ("fit", self._fit_view)]:
-            b = QPushButton(t); b.setFixedSize(28, 28)
+        btn_base = "font-size:11px;padding:4px 8px;border:1px solid #d0d7de;border-radius:4px;background:#fff;color:#333;"
+        btn_hover = "QPushButton:hover{background:#e8eaed;}"
+        bl = lambda t: f"QPushButton{{{btn_base}}}{btn_hover}" if "QPushButton" not in t else t
+
+        for t, fn, tip in [("放大", lambda: self._zoom_view(1.25), "滚轮缩放 / 按钮放大"),
+                            ("缩小", lambda: self._zoom_view(0.8), "滚轮缩放 / 按钮缩小"),
+                            ("适应", self._fit_view, "适应窗口显示全部内容")]:
+            b = QPushButton(t); b.setFixedHeight(26)
+            b.setToolTip(tip); b.setStyleSheet(bl(""))
             b.clicked.connect(fn); tb.addWidget(b)
-        self.draw_btn = QPushButton("边界")
-        self.draw_btn.setFixedHeight(28); self.draw_btn.setCheckable(True)
+        self.draw_btn = QPushButton("▦ 边界")
+        self.draw_btn.setFixedHeight(26); self.draw_btn.setCheckable(True)
+        self.draw_btn.setToolTip("绘制多边形边界：左键加点 / 点击起点封闭")
         self.draw_btn.clicked.connect(self._toggle_boundary)
+        self.draw_btn.setStyleSheet("QPushButton{" + btn_base + "}QPushButton:checked{background:#e3f2fd;color:#1565c0;border-color:#1565c0;}")
         tb.addWidget(self.draw_btn)
-        self.route_btn = QPushButton("路线")
-        self.route_btn.setFixedHeight(28); self.route_btn.setCheckable(True)
+        self.route_btn = QPushButton("⌇ 路线")
+        self.route_btn.setFixedHeight(26); self.route_btn.setCheckable(True)
+        self.route_btn.setToolTip("绘制路线：左键加点(吸附节点) / 右键完成")
         self.route_btn.clicked.connect(self._toggle_route)
+        self.route_btn.setStyleSheet("QPushButton{" + btn_base + "}QPushButton:checked{background:#fce4ec;color:#c62828;border-color:#c62828;}")
         tb.addWidget(self.route_btn)
         tb.addStretch()
-        b = QPushButton("+节点"); b.setFixedHeight(28)
+        b = QPushButton("+ 节点"); b.setFixedHeight(26)
+        b.setToolTip("添加地图节点（国家/地区/城市等）")
         b.clicked.connect(self._on_add_node); tb.addWidget(b)
+        b.setStyleSheet("QPushButton{font-size:11px;padding:4px 10px;background:#4a90d9;color:#fff;border:none;border-radius:4px;}QPushButton:hover{background:#3a7bc8;}")
         lo.addLayout(tb)
 
         self.scene = MapScene(self)
@@ -670,6 +681,7 @@ class MapDock(QDockWidget):
         _REBUILD = True
         self.scene.clear()
         self.view.set_node_positions(self.module.nodes)
+        self._conn_lines = {}  # nid -> QGraphicsLineItem (该节点向上连接父节点的线)
 
         for n in self.module.nodes:
             if n.parent_id:
@@ -678,6 +690,7 @@ class MapDock(QDockWidget):
                     line = QGraphicsLineItem(QLineF(p.x, p.y, n.x, n.y))
                     line.setPen(QPen(QColor("#ccc"), 1, Qt.PenStyle.DashLine))
                     line.setZValue(1); self.scene.addItem(line)
+                    self._conn_lines[n.id] = line
 
         for rt in self.module.routes:
             c = QColor(rt.color)
@@ -722,9 +735,25 @@ class MapDock(QDockWidget):
             if n.id == nid:
                 n.x = round(n.x + dx, 1)
                 n.y = round(n.y + dy, 1)
-                # 边界是绝对坐标，不受节点移动影响
                 self.module.save()
                 break
+        # 更新场景中的从属连线
+        lines = getattr(self, '_conn_lines', {})
+        # 该节点作为子节点 → 更新它连向父节点的线（key=该节点的id）
+        ln = lines.get(nid)
+        if ln:
+            node = next((x for x in self.module.nodes if x.id == nid), None)
+            if node and node.parent_id:
+                parent = next((p for p in self.module.nodes if p.id == node.parent_id), None)
+                if parent:
+                    ln.setLine(QLineF(parent.x, parent.y, node.x, node.y))
+        # 该节点作为父节点 → 更新所有子节点连向它的线
+        for child_id, child_line in lines.items():
+            child = next((c for c in self.module.nodes if c.id == child_id), None)
+            if child and child.parent_id == nid:
+                node = next((n for n in self.module.nodes if n.id == nid), None)
+                if node:
+                    child_line.setLine(QLineF(node.x, node.y, child.x, child.y))
 
     def _toggle_boundary(self, checked):
         self.route_btn.setChecked(False)

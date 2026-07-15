@@ -14,6 +14,7 @@ from .worldview_skills import (GetWorldviewSkill, CreateWorldviewEntrySkill,
                                 UpdateWorldviewEntrySkill, DeleteWorldviewEntrySkill)
 from .map_skills import (GetMapSkill, CreateMapNodeSkill, UpdateMapNodeSkill,
                           DeleteMapNodeSkill, CreateMapRouteSkill, DeleteMapRouteSkill)
+from .rag_skills import SearchChaptersSkill
 
 
 def get_all_skills() -> list[Skill]:
@@ -43,6 +44,7 @@ def get_all_skills() -> list[Skill]:
         DeleteMapNodeSkill(),
         CreateMapRouteSkill(),
         DeleteMapRouteSkill(),
+        SearchChaptersSkill(),
         GetChaptersSkill(),
         ReadChapterSkill(),
         CreateChapterSkill(),

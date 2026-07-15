@@ -1,58 +1,69 @@
 """作品目录的增删改查操作。"""
-
-import re
-import shutil
+import re, shutil, json
 from pathlib import Path
 from typing import Optional
-
 from .meta import WorkMeta, load_meta, save_meta
 
 
 def slugify(name: str) -> str:
-    """将作品名转为安全的目录名。"""
     name = re.sub(r'[\\/:*?"<>|]', '', name)
     name = re.sub(r'\s+', '-', name.strip())
     name = re.sub(r'-+', '-', name)
     return name[:120]
 
 
+# 工作空间 Git 配置文件（替代原来每个作品的 work.json 中的 git 字段）
+def _workspace_git_config_path(works_dir: Path) -> Path:
+    return works_dir / ".rewrite_git.json"
+
+
+def load_workspace_git_config(works_dir: Path) -> dict:
+    """加载工作空间级 Git 配置。"""
+    path = _workspace_git_config_path(works_dir)
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"enabled": True, "remote_url": "", "auto_push": False}
+
+
+def save_workspace_git_config(works_dir: Path, config: dict):
+    """保存工作空间级 Git 配置。"""
+    path = _workspace_git_config_path(works_dir)
+    try:
+        path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        print("保存工作空间 Git 配置失败")
+
+
 def create_work(works_dir: Path, title: str, work_type: str = "novel",
-                modules: list = None, git_enabled: bool = True,
-                git_remote: str = "", git_auto_push: bool = False,
-                date_era: str = "") -> Optional[Path]:
-    """创建新作品目录和元数据。返回作品路径，失败返回 None。"""
+                modules: list = None, date_era: str = "",
+                git_enabled: bool = True, git_remote: str = "") -> Optional[Path]:
+    """创建新作品目录和元数据。返回作品路径，失败返回 None。
+
+    Git 现在是工作空间级的：首次建作品时初始化整个 works/ 目录为 Git 仓库。
+    """
     dir_name = f"{work_type}-{slugify(title)}"
     work_path = works_dir / dir_name
-
     if work_path.exists():
         print(f"错误: 作品目录已存在 {work_path}")
         return None
-
     if not works_dir.exists():
         works_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        # 创建目录结构
         work_path.mkdir(parents=True)
         (work_path / "chapters").mkdir()
         (work_path / ".autosave").mkdir()
-        # assets 目录暂不创建，需要时再建
 
-        # 创建元数据
-        meta = WorkMeta.new(
-            title=title,
-            work_type=work_type,
-            modules=modules,
-            git_enabled=git_enabled,
-            git_remote=git_remote,
-            git_auto_push=git_auto_push,
-            date_era=date_era,
-        )
+        meta = WorkMeta.new(title=title, work_type=work_type, modules=modules,
+                            date_era=date_era)
         save_meta(work_path / "work.json", meta)
 
-        # 可选 Git 初始化
+        # 工作空间 Git 初始化（仅首次）
         if git_enabled:
-            _git_init(work_path, git_remote)
+            _init_workspace_git(works_dir, git_remote)
 
         return work_path
 
@@ -64,7 +75,6 @@ def create_work(works_dir: Path, title: str, work_type: str = "novel",
 
 
 def delete_work(work_path: Path) -> bool:
-    """删除作品目录。"""
     if not work_path.exists() or not work_path.is_dir():
         return False
     try:
@@ -76,7 +86,6 @@ def delete_work(work_path: Path) -> bool:
 
 
 def update_work_meta(work_path: Path, **updates) -> bool:
-    """选择性更新作品元数据字段。"""
     meta_path = work_path / "work.json"
     meta = load_meta(meta_path)
     if meta is None:
@@ -90,24 +99,33 @@ def update_work_meta(work_path: Path, **updates) -> bool:
 
 
 def work_exists(works_dir: Path, title: str) -> bool:
-    """检查是否已经存在同名作品。"""
-    dir_name_pattern = f"-{slugify(title)}"
     for child in works_dir.iterdir():
-        if child.is_dir() and dir_name_pattern in child.name:
-            return True
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        meta_path = child / "work.json"
+        if meta_path.exists():
+            meta = load_meta(meta_path)
+            if meta and meta.title == title:
+                return True
     return False
 
 
-def _git_init(work_path: Path, remote_url: str = "") -> bool:
-    """在作品目录初始化 Git 仓库。使用 GitManager。"""
+def _init_workspace_git(works_dir: Path, remote_url: str = "") -> bool:
+    """初始化整个工作空间目录为 Git 仓库（每个工作空间只有一个仓库）。"""
     from .git_manager import GitManager
-    gm = GitManager(work_path)
+    gm = GitManager(works_dir)
+    if gm.is_repo():
+        # 已存在，更新远程 URL（如果传了新的）
+        if remote_url:
+            gm.set_remote(remote_url)
+        return True
     ok, _ = gm.init()
     if not ok:
         return False
-    # 初始提交
     gm.add_all()
-    gm.commit("ReWrite: 初始化作品")
+    gm.commit("ReWrite: 初始化作品库")
+    # 保存远程 URL 到配置文件（供后续使用）
     if remote_url:
         gm.set_remote(remote_url)
+        save_workspace_git_config(works_dir, {"remote_url": remote_url})
     return True

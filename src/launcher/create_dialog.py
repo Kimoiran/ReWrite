@@ -70,7 +70,7 @@ class CreateWorkDialog(QDialog):
         git_group = QGroupBox("版本管理")
         git_layout = QVBoxLayout(git_group)
 
-        self.git_check = QCheckBox("启用 Git 本地版本管理（推荐）")
+        self.git_check = QCheckBox("启用 Git 工作空间版本管理（推荐，所有作品共享一个仓库）")
         self.git_check.setChecked(True)
         self.git_check.toggled.connect(self._on_git_toggled)
         git_layout.addWidget(self.git_check)

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 
 from ..storage.meta import WorkMeta, type_to_name
 from ..storage.work_io import create_work, delete_work, work_exists
+from ..storage.git_manager import GitManager
 from ..storage.workspace import Workspace
 from ..utils.stats import format_word_count
 from ..ui.titlebar import TitleBar, make_frameless
@@ -131,32 +132,40 @@ class LauncherWindow(QWidget):
         content_layout.setSpacing(12)
 
         # ── 工具栏 ──
+        btn_style = "QPushButton{font-size:12px;padding:4px 12px;border:1px solid #d0d7de;border-radius:4px;background:#fff;color:#333;}QPushButton:hover{background:#e8eaed;}"
+        primary_style = "QPushButton{font-size:12px;font-weight:bold;padding:6px 16px;background:#2196F3;color:#fff;border:none;border-radius:4px;}QPushButton:hover{background:#1976D2;}"
+
         toolbar = QHBoxLayout()
-        import_btn = QPushButton("导入")
+        import_btn = QPushButton("📥 导入")
         import_btn.setToolTip("从 ZIP 文件或 Git 仓库导入作品")
+        import_btn.setStyleSheet(btn_style)
         import_btn.clicked.connect(self._on_import)
         toolbar.addWidget(import_btn)
 
-        export_btn = QPushButton("导出")
+        export_btn = QPushButton("📤 导出")
         export_btn.setToolTip("导出为 .writepack")
+        export_btn.setStyleSheet(btn_style)
         export_btn.clicked.connect(self._on_export)
         toolbar.addWidget(export_btn)
 
-        new_btn = QPushButton("新作品")
-        new_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3; color: white; font-weight: bold;
-            }
-            QPushButton:hover { background-color: #1976D2; }
-        """)
+        new_btn = QPushButton("＋ 新作品")
+        new_btn.setStyleSheet(primary_style)
         new_btn.clicked.connect(self._on_new_work)
         toolbar.addWidget(new_btn)
 
         toolbar.addStretch()
 
-        settings_btn = QPushButton("⚙")
-        settings_btn.setToolTip("设置")
-        settings_btn.setFixedSize(32, 32)
+        # ── Git 状态 ──
+        self.git_status_btn = QPushButton("⬆ 推送")
+        self.git_status_btn.setToolTip("提交并推送所有作品到远程仓库")
+        self.git_status_btn.setStyleSheet("QPushButton{font-size:12px;padding:4px 12px;border:1px solid #4CAF50;border-radius:4px;background:#E8F5E9;color:#2E7D32;}QPushButton:hover{background:#C8E6C9;}")
+        self.git_status_btn.clicked.connect(self._on_git_commit)
+        self.git_status_btn.setVisible(False)
+        toolbar.addWidget(self.git_status_btn)
+
+        settings_btn = QPushButton("⚙ 设置")
+        settings_btn.setToolTip("打开设置")
+        settings_btn.setStyleSheet(btn_style)
         settings_btn.clicked.connect(self.settings_requested.emit)
         toolbar.addWidget(settings_btn)
         content_layout.addLayout(toolbar)
@@ -207,6 +216,11 @@ class LauncherWindow(QWidget):
         self._cards.clear()
 
         works = self.workspace.scan()
+
+        # Git 仓库状态
+        self._git = GitManager(self.workspace.works_dir)
+        self._refresh_git_status()
+
         if works:
             total = len(works)
             total_words = sum(w.total_words for w in works)
@@ -392,6 +406,10 @@ class LauncherWindow(QWidget):
                 return
 
             shutil.copytree(cloned, target)
+            # 清理旧版内嵌 .git（工作空间级仓库不需要）
+            nested_git = target / ".git"
+            if nested_git.exists():
+                shutil.rmtree(nested_git, ignore_errors=True)
             shutil.rmtree(tmp, ignore_errors=True)
             self._refresh()
             QMessageBox.information(self, "成功", f"作品「{final_name.strip()}」导入成功")
@@ -447,6 +465,47 @@ class LauncherWindow(QWidget):
             QMessageBox.information(self, "成功", f"作品「{meta.title}」已导出")
         else:
             QMessageBox.critical(self, "导出失败", msg)
+
+    # ── Git ──
+
+    def _refresh_git_status(self):
+        if not hasattr(self, '_git') or not self._git.is_repo():
+            self.git_status_btn.setVisible(False)
+            return
+        self.git_status_btn.setVisible(True)
+        try:
+            s = self._git.status()
+            dirty = "⚠" if s.get("dirty") else ""
+            self.git_status_btn.setText(f"⬆ 推送{dirty}")
+            tooltip = f"提交数: {s['commit_count']} | 未暂存: {s['unstaged']} | 领先: {s['ahead']}"
+            if s.get("has_remote"):
+                tooltip += " | 点击提交并推送"
+            else:
+                tooltip += " | 未配置远程仓库"
+            self.git_status_btn.setToolTip(tooltip)
+        except Exception:
+            self.git_status_btn.setText("⬆ 推送 ?")
+
+    def _on_git_commit(self):
+        if not hasattr(self, '_git') or not self._git.is_repo():
+            QMessageBox.information(self, "Git", "工作空间未初始化 Git 仓库")
+            return
+        # 检查是否有未提交的更改
+        s = self._git.status()
+        if not s.get("dirty") and not s.get("staged") and not s.get("unstaged"):
+            QMessageBox.information(self, "Git", "没有需要提交的更改，仓库已是最新")
+            return
+        from PySide6.QtWidgets import QInputDialog
+        msg, ok = QInputDialog.getText(self, "提交说明", "提交消息:",
+                                        text="ReWrite: 更新作品库")
+        if not ok:
+            return
+        ok, result = self._git.commit_and_push(msg.strip())
+        if ok:
+            self._refresh_git_status()
+            QMessageBox.information(self, "Git", result)
+        else:
+            QMessageBox.critical(self, "Git 错误", result)
 
     def refresh_after_edit(self):
         self._refresh()

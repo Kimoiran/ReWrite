@@ -9,6 +9,8 @@ from PySide6.QtWidgets import QDockWidget, QMessageBox
 from ..base_module import BaseModule
 from .agent import AIAgent
 from .annotation_manager import AnnotationManager
+from .rag import RAGEngine
+from .skills.rag_skills import SearchChaptersSkill
 from .ui.chat_panel import ChatPanel
 from .ui.annotation_list import AnnotationListPanel
 
@@ -27,9 +29,15 @@ class AIAssistantModule(BaseModule):
         self.annotation_mgr = AnnotationManager(work_path)
         self.annotation_mgr.load()
         self._editor = None
+        self._rag = RAGEngine()
 
     def load(self):
         self.annotation_mgr.load()
+        # 加载后初始化 RAG 索引（需要章节模块已加载）
+        chap_mod = self._get_module("chapters")
+        if chap_mod:
+            self._rag.build_index(chap_mod)
+            SearchChaptersSkill.set_engine(self._rag)
 
     def save(self):
         self.annotation_mgr.save()
@@ -522,6 +530,10 @@ class AIAssistantModule(BaseModule):
                         self._editor.blockSignals(False)
                 except OSError:
                     pass
+
+        # RAG 索引重建（章节内容可能已变化）
+        if self._rag and chap_mod:
+            self._rag.build_index(chap_mod)
 
     def _on_analyze(self):
         if not self.agent.is_configured():

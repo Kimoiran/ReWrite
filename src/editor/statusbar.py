@@ -110,7 +110,7 @@ class EditorStatusBar(QStatusBar):
     def update_git_status(self, status: dict):
         """更新 Git 状态显示。内容为空时隐藏按钮。"""
         # 有远程仓库就显示推送按钮
-        self.push_btn.setVisible(status.get("has_remote", False))
+        self.push_btn.setVisible(False)  # 提交推送已移到启动页
 
         if not status.get("has_remote") and not status.get("dirty") and not status.get("commit_count"):
             self.git_btn.setText("Git: -")
@@ -145,22 +145,16 @@ class EditorStatusBar(QStatusBar):
         )
 
     def _on_git_click(self):
-        """点击 Git 按钮弹出操作菜单。"""
+        """点击 Git 按钮显示状态（提交推送已移到启动页）。"""
         menu = QMenu(self)
-        menu.setStyleSheet("")
-
-        commit_act = menu.addAction("提交 & 推送")
-        commit_act.triggered.connect(self._on_commit_push)
-
-        if menu.exec(self.git_btn.mapToGlobal(self.git_btn.rect().bottomLeft())):
-            pass
+        menu.addAction("提交并推送请使用启动页的 Git 按钮").setEnabled(False)
+        menu.exec(self.git_btn.mapToGlobal(self.git_btn.rect().bottomLeft()))
 
     def _on_commit_push(self):
-        self.commit_push_requested.emit("ReWrite: 更新内容")
+        pass
 
     def _on_push_clicked(self):
-        """推送按钮点击。"""
-        self.commit_push_requested.emit("推送")
+        pass
 
 
 def format_word_count(count: int) -> str:

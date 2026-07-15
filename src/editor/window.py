@@ -15,7 +15,7 @@ from .modules.chapters import ChapterModule
 from .autosave.engine import SaveEngine
 from .search import SearchDialog
 from .sync import document_sync
-from ..storage.git_manager import GitManager
+from ..storage.git_manager import GitManager, MigrateGit
 from ..ui.titlebar import make_frameless, attach_title_bar
 
 
@@ -60,7 +60,10 @@ class EditorWindow(QMainWindow):
         self.setStyleSheet("QMainWindow { background-color: #f0f6fa; }")
 
     def _init_git(self):
-        self.git_manager = GitManager(self.work_path)
+        # 工作空间级 Git 仓库（works/ 目录）
+        self.git_manager = GitManager(self.work_path.parent)
+        # 迁移：清理旧版作品内嵌的 .git 目录
+        MigrateGit(self.work_path.parent).migrate()
 
     def _ensure_chapters(self):
         chap = ChapterModule(self.work_path)
@@ -454,7 +457,7 @@ class EditorWindow(QMainWindow):
 
     def _show_git_status(self):
         if not self.git_manager.is_repo():
-            QMessageBox.information(self, "Git 状态", "此作品未启用 Git 版本管理")
+            QMessageBox.information(self, "Git 状态", "工作空间未启用 Git 版本管理")
             return
         status = self.git_manager.status()
         lines = [
@@ -469,7 +472,7 @@ class EditorWindow(QMainWindow):
 
     def _on_commit_and_push(self):
         if not self.git_manager.is_repo():
-            QMessageBox.information(self, "提示", "此作品未启用 Git 版本管理")
+            QMessageBox.information(self, "提示", "工作空间未启用 Git 版本管理")
             return
 
         msg = QInputDialog.getText(
@@ -540,7 +543,7 @@ class EditorWindow(QMainWindow):
                         data = json.loads(resp.read().decode("utf-8"))
                         user = data.get("login", "")
                     _save_token(new_token.strip(), user)
-                    self.git_manager = GitManager(self.work_path)
+                    self.git_manager = GitManager(self.work_path.parent)
                     QMessageBox.information(self, "成功", f"Token 保存成功！用户: {user}")
                 except Exception as e:
                     QMessageBox.warning(self, "失败", f"Token 验证失败: {e}")

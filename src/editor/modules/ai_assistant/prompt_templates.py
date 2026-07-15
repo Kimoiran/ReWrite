@@ -4,7 +4,7 @@
 # AI 的核心工作是「用函数调用来操作数据」，不是「写文章描述数据」
 
 SKILL_MAP = """
-工具列表（共 29 个）：
+工具列表（共 30 个）：
 
 📖 章节
   - get_chapters / read_chapter / create_chapter / update_chapter / rename_chapter / delete_chapter
@@ -18,6 +18,8 @@ SKILL_MAP = """
   - get_worldview / create_worldview_entry / update_worldview_entry / delete_worldview_entry
 🗺️ 地图
   - get_map / create_map_node / update_map_node / delete_map_node / create_map_route / delete_map_route
+🔍 搜索
+  - search_chapters（语义搜索章节正文，找相关段落）
 
 work 参数由系统自动注入，不需要填写。
 

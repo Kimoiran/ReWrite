@@ -112,10 +112,10 @@ def create_github_repo(token: str, repo_name: str, private: bool = True,
 
 
 class GitManager:
-    """管理单个作品目录的 Git 操作。"""
+    """管理工作空间目录的 Git 操作（一个工作空间 = 一个 Git 仓库，包含所有作品）。"""
 
-    def __init__(self, work_path: Path):
-        self.work_path = work_path
+    def __init__(self, works_dir: Path):
+        self.works_dir = works_dir
         self._token, self._user = _load_token()
 
     def _run(self, args: list[str]) -> subprocess.CompletedProcess:
@@ -125,7 +125,7 @@ class GitManager:
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             return subprocess.run(
                 args,
-                cwd=self.work_path,
+                cwd=self.works_dir,
                 capture_output=True,
                 timeout=30,
                 startupinfo=startupinfo,
@@ -148,8 +148,8 @@ class GitManager:
         return remote_url
 
     def is_repo(self) -> bool:
-        """检查是否已是 Git 仓库。"""
-        return (self.work_path / ".git").exists()
+        """检查工作空间是否已是 Git 仓库。"""
+        return (self.works_dir / ".git").exists()
 
     def init(self) -> tuple[bool, str]:
         """初始化 Git 仓库。"""
@@ -160,8 +160,8 @@ class GitManager:
             return False, r.stderr.decode("utf-8", errors="replace").strip()
 
         # 创建 .gitignore
-        (self.work_path / ".gitignore").write_text(
-            ".DS_Store\nThumbs.db\n*.tmp\n*.log\n", encoding="utf-8"
+        (self.works_dir / ".gitignore").write_text(
+            ".DS_Store\nThumbs.db\n*.tmp\n*.log\n.rewrite_git.json\n", encoding="utf-8"
         )
         return True, "初始化成功"
 
@@ -249,25 +249,22 @@ class GitManager:
         return name if name else "main"
 
     def push(self) -> tuple[bool, str]:
-        """推送到远程仓库。自动使用 Token 认证。"""
+        """推送到远程仓库（优先 Token 认证，无 Token 时用系统凭据）。"""
         if not self.is_repo():
             return False, "不是 Git 仓库"
-
         url = self.get_remote_url()
         if not url:
             return False, "未配置远程仓库"
-
         branch = self._current_branch()
-        push_url = self._remote_with_token(url)
+        # Token 有配置 → 嵌入 URL；未配置 → 用 git credential helper
+        push_url = self._remote_with_token(url) if self._token else url
         r = self._run(["git", "push", "-u", push_url, branch])
         if r.returncode == 0:
             out = r.stdout.decode("utf-8", errors="replace").strip()
             return True, out or "推送成功"
-
         err = r.stderr.decode("utf-8", errors="replace").strip()
         if "could not read Username" in err or "Authentication failed" in err:
-            _save_token("", self._user)
-            return False, "认证失败，Token 已清空，请重新配置"
+            return False, "认证失败。请在 设置→Git 版本管理 中配置 GitHub Token，\n或确保 Windows 凭据管理器中已存储 GitHub 密码。"
         return False, err[:200]
 
     def commit_and_push(self, message: str = "") -> tuple[bool, str]:
@@ -293,3 +290,25 @@ def open_token_settings():
         _save_token("", "")
     import subprocess as sp
     sp.run(f'notepad "{path}"', shell=True)
+
+
+class MigrateGit:
+    """迁移工具：清理旧版作品内嵌的 .git 目录，转为工作空间级仓库。"""
+
+    def __init__(self, works_dir: Path):
+        self.works_dir = works_dir
+
+    def migrate(self):
+        """扫描 works/ 下的作品目录，检测并提示旧版内嵌 .git。"""
+        if not self.works_dir.exists():
+            return
+        nested = []
+        for child in self.works_dir.iterdir():
+            if child.is_dir() and not child.name.startswith("."):
+                g = child / ".git"
+                if g.exists() and g.is_dir():
+                    nested.append(child.name)
+        if nested:
+            names = ", ".join(nested)
+            print(f"检测到旧版作品内嵌 Git 仓库 ({names})。"
+                  f"工作空间级仓库已启用，这些内嵌仓库可手动删除。")

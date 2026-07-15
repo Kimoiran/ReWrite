@@ -23,7 +23,7 @@ class SaveEngine(QObject):
         self.work_path = work_path
         self.autosave_dir = work_path / ".autosave"
         self.snapshot_dir = self.autosave_dir / "snapshots"
-        self._max_snapshots = 20
+        self._max_snapshots = 10
         self._last_snapshot_time = datetime.now()
 
         self.autosave_dir.mkdir(parents=True, exist_ok=True)
