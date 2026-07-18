@@ -87,9 +87,9 @@ class AIAssistantModule(BaseModule):
 
     def get_context(self, scope: str) -> str:
         from .contexts import collect_context
-        html = ""; sel = ""
+        md = ""; sel = ""
         if self._editor:
-            html = self._editor.get_html()
+            md = self._editor.get_markdown()
             cursor = self._editor.textCursor()
             if cursor.hasSelection():
                 sel = cursor.selection().toHtml()
@@ -101,7 +101,7 @@ class AIAssistantModule(BaseModule):
                   "tags": getattr(m, 'tags', []), "total_words": getattr(m, 'total_words', 0),
                   "date_era": getattr(m, 'date_era', '')}
         return collect_context(
-            scope=scope.split(","), current_html=html, current_selection=sel,
+            scope=scope.split(","), current_md=md, current_selection=sel,
             chapter_module=self._get_module("chapters"),
             character_module=self._get_module("characters"),
             outline_module=self._get_module("outline"),
@@ -432,12 +432,12 @@ class AIAssistantModule(BaseModule):
             cp = self._editor.current_chapter_path()
             if cp and Path(cp).exists():
                 try:
-                    nh = Path(cp).read_text(encoding="utf-8")
-                    if nh != self._editor.get_html():
+                    nmd = Path(cp).read_text(encoding="utf-8")
+                    if nmd != self._editor.get_markdown():
                         pos = self._editor.textCursor().position()
                         self._editor.blockSignals(True)
-                        self._editor.setHtml(nh)
-                        c = self._editor.textCursor(); c.setPosition(min(pos, len(nh)))
+                        self._editor.setMarkdown(nmd)
+                        c = self._editor.textCursor(); c.setPosition(min(pos, len(nmd)))
                         self._editor.setTextCursor(c)
                         self._editor.blockSignals(False)
                 except OSError:
@@ -524,7 +524,13 @@ class AIAssistantModule(BaseModule):
         lo.addWidget(QLabel(f"章节修改确认: {chapter_path}"))
         sp = QSplitter(_Qt.Orientation.Horizontal)
         for label, color, text in [("旧版", "#C62828", old_text), ("新版", "#2E7D32", new_text)]:
-            w = QTextBrowser(); w.setHtml(text); w.setStyleSheet(
+            w = QTextBrowser()
+            from .markdown_render import markdown_to_html as _mdh
+            if text.strip().startswith("<"):
+                w.setHtml(text)
+            else:
+                w.setHtml(_mdh(text))
+            w.setStyleSheet(
                 f"QTextBrowser{{background-color:{'#FFF5F5' if label=='旧版' else '#F1F8E9'};"
                 f"border:1px solid {'#FFCDD2' if label=='旧版' else '#C8E6C9'};padding:12px;font-size:13px;}}")
             lbl = QLabel(label); lbl.setStyleSheet(f"color:{color};font-weight:bold;font-size:11px;")

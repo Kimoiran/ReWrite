@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QDockWidget
 
 from .base_module import BaseModule
 from ...utils.stats import count_words
-from .ai_assistant.skills._shared import make_chapter_html
+from .ai_assistant.skills._shared import make_chapter_md
 
 
 @dataclass
@@ -33,20 +33,57 @@ class ChapterModule(BaseModule):
         self._dirty = False
 
     def load(self):
-        """扫描 chapters/ 目录加载章节列表（快速扫描，不读文件内容）。"""
+        """扫描 chapters/ 目录加载章节列表。自动迁移旧 .html 文件为 .md。"""
         self._chapters = []
         if not self.chapters_dir.exists():
             self.chapters_dir.mkdir(parents=True)
             return
 
         for f in sorted(self.chapters_dir.iterdir()):
-            if f.suffix.lower() != ".html" or f.name.startswith("."):
+            if f.name.startswith("."):
                 continue
-            info = self._parse_filename(f)
-            if info:
-                self._chapters.append(info)
+            suffix = f.suffix.lower()
+            if suffix == ".html":
+                # 自动迁移旧 HTML 文件 → Markdown
+                try:
+                    md_path = self._migrate_html_to_md(f)
+                    if md_path:
+                        info = self._parse_filename(md_path)
+                        if info:
+                            self._chapters.append(info)
+                except Exception:
+                    pass
+            elif suffix == ".md":
+                info = self._parse_filename(f)
+                if info:
+                    self._chapters.append(info)
 
         self._chapters.sort(key=lambda c: c.order)
+
+    def _migrate_html_to_md(self, html_path: Path) -> Path:
+        """将旧 .html 章节迁移为 .md，删除原文件。"""
+        from PySide6.QtWidgets import QTextEdit
+        import re as _re
+        html = html_path.read_text(encoding="utf-8")
+        editor = QTextEdit()
+        editor.setHtml(html)
+        from PySide6.QtGui import QTextDocument
+        md = editor.toMarkdown(
+            QTextDocument.MarkdownFeature.MarkdownDialectGitHub
+        )
+        # 修正：QTextEdit 将旧标题（17pt bold span）转成了 **Title**，
+        # 需要改回 # Title 格式，否则会被 text-indent 缩进
+        md = _re.sub(r'^\*\*(.+?)\*\*$', r'# \1', md.strip(), count=1, flags=_re.MULTILINE)
+        if not md.startswith("# "):
+            # 兜底：取文件名中的标题部分
+            stem = html_path.stem
+            title = stem.split("_", 1)[-1] if "_" in stem else stem
+            md = f"# {title}\n\n{md}"
+        md_path = html_path.with_suffix(".md")
+        md_path.write_text(md, encoding="utf-8")
+        # 备份原 HTML 文件
+        html_path.rename(html_path.with_suffix(".html.bak"))
+        return md_path
 
     def _parse_filename(self, path: Path) -> Optional[ChapterInfo]:
         """从文件名解析章节信息（只读文件名，不读内容）。"""
@@ -69,14 +106,14 @@ class ChapterModule(BaseModule):
     def _build_filename(self, order: int, title: str) -> str:
         """生成文件名。"""
         safe_title = re.sub(r'[\\/:*?"<>|]', "", title).strip()
-        return f"{order:04d}_{safe_title}.html"
+        return f"{order:04d}_{safe_title}.md"
 
     def list_chapters(self) -> list[ChapterInfo]:
         """获取章节列表。"""
         return sorted(self._chapters, key=lambda c: c.order)
 
     def create_chapter(self, title: str) -> Optional[ChapterInfo]:
-        """创建新章节。内容为空 HTML。"""
+        """创建新章节。内容为 Markdown 格式。"""
         if not title.strip():
             return None
         # 确定序号
@@ -88,10 +125,9 @@ class ChapterModule(BaseModule):
         filename = self._build_filename(order, safe_title)
         filepath = self.chapters_dir / filename
 
-        # 标准化的 QTextEdit HTML 模板
-        html = make_chapter_html(safe_title)
+        md = make_chapter_md(safe_title)
         try:
-            filepath.write_text(html, encoding="utf-8")
+            filepath.write_text(md, encoding="utf-8")
         except OSError:
             return None
 
@@ -110,25 +146,17 @@ class ChapterModule(BaseModule):
         new_filename = self._build_filename(info.order, safe_title)
         new_path = self.chapters_dir / new_filename
 
-        # 读取旧内容，更新标题标签（支持 <h2> 和 QTextEdit 的 <p><span> 两种格式）
+        # 读取旧内容，更新 Markdown 标题行
         try:
-            html = old_path.read_text(encoding="utf-8")
+            md = old_path.read_text(encoding="utf-8")
         except OSError:
             return None
-        # 优先匹配 QTextEdit 的 <p><span style="...font-weight:700;">...</span></p>
-        new_html = re.sub(
-            r'(<p[^>]*><span[^>]*font-weight:\s*700[^>]*>).*?(</span></p>)',
-            rf'\1{safe_title}\2',
-            html, count=1, flags=re.IGNORECASE,
-        )
-        if new_html == html:
-            # 回退：匹配 <h2>...</h2>
-            new_html = re.sub(r'<h2>.*?</h2>', f'<h2>{safe_title}</h2>', html, count=1)
-        html = new_html
+        # 替换 Markdown # 标题
+        md = re.sub(r'^# .*$', f'# {safe_title}', md, count=1, flags=re.MULTILINE)
 
         try:
             old_path.rename(new_path)
-            new_path.write_text(html, encoding="utf-8")
+            new_path.write_text(md, encoding="utf-8")
         except OSError:
             return None
 
@@ -177,16 +205,16 @@ class ChapterModule(BaseModule):
             return ""
         return path.read_text(encoding="utf-8")
 
-    def write_chapter(self, path: Path, html: str) -> bool:
+    def write_chapter(self, path: Path, md: str) -> bool:
         """写入章节。先写临时文件再 rename，保证原子性。"""
         try:
             tmp = path.with_suffix(".tmp")
-            tmp.write_text(html, encoding="utf-8")
+            tmp.write_text(md, encoding="utf-8")
             tmp.replace(path)
             # 更新字数
             info = self._find_by_path(path)
             if info:
-                info.word_count = count_words(html)
+                info.word_count = count_words(md)
             self._dirty = True
             return True
         except OSError as e:
@@ -202,15 +230,10 @@ class ChapterModule(BaseModule):
         q = query.lower()
         results = []
         for chap in self._chapters:
-            html = self.read_chapter(chap.path)
-            if q in html.lower():
-                # 找匹配位置附近的片段
-                import re as re_mod
-                # 取前 50 个字符做摘要
-                idx = html.lower().find(q)
-                snippet = html[max(0, idx - 30):idx + len(q) + 30]
-                # 去除 HTML 标签
-                snippet = re_mod.sub(r"<[^>]+>", "", snippet).strip()
+            md = self.read_chapter(chap.path)
+            if q in md.lower():
+                idx = md.lower().find(q)
+                snippet = md[max(0, idx - 30):idx + len(q) + 30].strip()
                 results.append((chap.title, snippet, str(chap.path)))
         return results
 

@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from ..map import MapModule
 
 
-def collect_context(scope: list[str], current_html: str = "",
+def collect_context(scope: list[str], current_md: str = "",
                     current_selection: str = "",
                     chapter_module=None, character_module=None,
                     outline_module=None, timeline_module=None,
@@ -19,13 +19,12 @@ def collect_context(scope: list[str], current_html: str = "",
     """收集 AI 上下文，返回纯文本。每个模块带类型标注。"""
     parts = []
 
-    if "current_chapter" in scope and current_html:
-        import re
-        text = re.sub(r"<[^>]+>", "", current_html).strip()
-        if text:
-            parts.append(f"<<<章节正文 (chapters)>>>\n{text[:8000]}")
+    if "current_chapter" in scope and current_md:
+        if current_md.strip():
+            parts.append(f"<<<章节正文 (chapters)>>>\n{current_md[:8000]}")
 
     if "selected_text" in scope and current_selection:
+        # 用户选中文本从编辑器取仍可能是 HTML，需 strip
         import re
         sel = re.sub(r"<[^>]+>", "", current_selection).strip()
         if sel:

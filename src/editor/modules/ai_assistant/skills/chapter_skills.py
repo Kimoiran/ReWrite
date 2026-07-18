@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 from .base_skill import Skill
-from ._shared import _work_path, _load, _save, make_chapter_html
+from ._shared import _work_path, _load, _save, make_chapter_html, make_chapter_md
 
 
 class GetChaptersSkill(Skill):
@@ -63,7 +63,7 @@ class ReadChapterSkill(Skill):
 
 
 class CreateChapterSkill(Skill):
-    """创建新章节。自动分配序号，生成带标题的 HTML 文件。"""
+    """创建新章节。自动分配序号，生成 Markdown 文件。"""
 
     @property
     def name(self) -> str: return "create_chapter"
@@ -75,7 +75,7 @@ class CreateChapterSkill(Skill):
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "章节标题（如「第一章」）"},
-                "content": {"type": "string", "description": "（可选）初始正文 HTML，不填则只生成标题"},
+                "content": {"type": "string", "description": "（可选）初始正文（Markdown），不填则只生成标题"},
             },
             "required": ["title"],
         }
@@ -92,7 +92,7 @@ class CreateChapterSkill(Skill):
         # 确定下一个序号
         max_order = 0
         for f in chapters_dir.iterdir():
-            if f.suffix.lower() == ".html" and not f.name.startswith("."):
+            if f.suffix.lower() in (".md", ".html") and not f.name.startswith("."):
                 stem = f.stem
                 order_part = stem.split("_", 1)[0] if "_" in stem else ""
                 if order_part.isdigit():
@@ -100,13 +100,13 @@ class CreateChapterSkill(Skill):
         next_order = max_order + 1
 
         safe_title = re.sub(r'[\\/:*?"<>|]', "", title).strip()[:80]
-        filename = f"{next_order:04d}_{safe_title}.html"
+        filename = f"{next_order:04d}_{safe_title}.md"
         filepath = chapters_dir / filename
 
         content = args.get("content", "")
-        html = make_chapter_html(safe_title, content)
+        md = make_chapter_md(safe_title, content)
 
-        filepath.write_text(html, encoding="utf-8")
+        filepath.write_text(md, encoding="utf-8")
         return {"success": True, "title": safe_title, "order": next_order,
                 "path": str(filepath.relative_to(work))}
 

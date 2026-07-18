@@ -45,7 +45,7 @@ def get_recoverable_snapshots(work_path: Path) -> list[dict]:
 
     snapshots = []
     for f in sorted(snapshots_dir.iterdir()):
-        if f.suffix == ".html":
+        if f.suffix in (".md", ".html"):
             try:
                 mtime = datetime.fromtimestamp(f.stat().st_mtime)
                 snapshots.append({

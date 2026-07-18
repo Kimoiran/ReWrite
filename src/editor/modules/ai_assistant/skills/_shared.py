@@ -75,6 +75,14 @@ def _save(path: Path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def make_chapter_md(title: str, content: str = "") -> str:
+    """生成标准化的章节 Markdown 文本。"""
+    safe_title = _re.sub(r'[\\/:*?"<>|]', "", title).strip()[:80]
+    if content:
+        return f"# {safe_title}\n\n{content}"
+    return f"# {safe_title}\n\n"
+
+
 def make_chapter_html(title: str, content: str = "") -> str:
     """生成标准化的章节 HTML（QTextEdit 兼容格式，统一 14pt 正文/17pt 标题）。
 

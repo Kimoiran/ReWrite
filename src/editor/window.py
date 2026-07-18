@@ -244,12 +244,12 @@ class EditorWindow(QMainWindow):
         chap_mod = self.modules.get("chapters")
         if not chap_mod:
             return
-        html = chap_mod.read_chapter(path)
-        self.editor.load_html(html)
+        md = chap_mod.read_chapter(path)
+        self.editor.load_markdown(md)
         self.editor.set_current_chapter(path_str)
 
         from ..utils.stats import count_words as _cw
-        wc = _cw(html)
+        wc = _cw(md)
         chapters = chap_mod.list_chapters()
         for c in chapters:
             if str(c.path) == path_str:
@@ -273,10 +273,10 @@ class EditorWindow(QMainWindow):
 
     def _on_editor_modified(self):
         """内容变化：实时写入 + 更新字数 + 更新侧栏。不发射信号。"""
-        html = self.editor.get_html()
+        md = self.editor.get_markdown()
         path = self.editor.current_chapter_path()
         if path:
-            self.save_engine.write_chapter(path, html)
+            self.save_engine.write_chapter(path, md)
             from ..utils.stats import count_words as _cw
             plain = self.editor.get_plain_text()
             wc = _cw(plain)
@@ -325,12 +325,12 @@ class EditorWindow(QMainWindow):
 
     def _on_save(self):
         """手动保存（Ctrl+S）：创建快照 + 广播同步 + 保存模块数据。"""
-        html = self.editor.get_html()
+        md = self.editor.get_markdown()
         path = self.editor.current_chapter_path()
         if path:
-            self.save_engine.write_chapter(path, html)
-            self.save_engine.manual_snapshot(path, html)
-            document_sync.broadcast(path, html, sender=self.editor.apply_sync)
+            self.save_engine.write_chapter(path, md)
+            self.save_engine.manual_snapshot(path, md)
+            document_sync.broadcast(path, md, sender=self.editor.apply_sync)
         for mod_id, mod in self.modules.items():
             try:
                 mod.save()

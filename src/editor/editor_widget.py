@@ -6,6 +6,8 @@ from PySide6.QtCore import Signal, Qt, QRect
 from PySide6.QtGui import QFont, QTextCursor, QTextCharFormat, QColor
 from PySide6.QtWidgets import QTextEdit
 
+from .modules.ai_assistant.markdown_render import markdown_to_html as _md_to_html
+
 
 _HIGHLIGHT_COLOR = QColor("#E8F5E9")  # 浅绿背景
 _UNDERLINE_COLOR = QColor("#4CAF50")  # 绿色下划线
@@ -15,7 +17,7 @@ class EditorWidget(QTextEdit):
     """富文本编辑器，支持 HTML 读写、格式化、正文标注。"""
 
     chapter_modified = Signal()
-    content_synced = Signal(str, str)  # (chapter_path, html) 给浮动窗口同步用
+    content_synced = Signal(str, str)  # (chapter_path, md) 给浮动窗口同步用
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -47,14 +49,131 @@ class EditorWidget(QTextEdit):
         self._modified = True
         self.chapter_modified.emit()
 
+    def keyPressEvent(self, event):
+        """Tab/Shift+Tab 缩进处理（全角空格，中文标准）。"""
+        _INDENT = "　　"  # 2 个全角空格 = 中文首行缩进
+        if event.key() == Qt.Key.Key_Tab:
+            cursor = self.textCursor()
+            if cursor.hasSelection():
+                start = cursor.selectionStart()
+                end = cursor.selectionEnd()
+                cursor.setPosition(start)
+                cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
+                begin_block = cursor.block().blockNumber()
+                cursor.setPosition(end)
+                cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
+                end_block = cursor.block().blockNumber()
+                cursor.beginEditBlock()
+                for _ in range(begin_block, end_block + 1):
+                    cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
+                    cursor.insertText(_INDENT)
+                    cursor.movePosition(QTextCursor.MoveOperation.NextBlock)
+                cursor.endEditBlock()
+                return
+            else:
+                # 仅当光标在行首或本行只有空白时插入缩进
+                block = cursor.block()
+                col = cursor.columnNumber()
+                if col == 0 or not block.text()[:col].strip():
+                    cursor.insertText(_INDENT)
+                    return
+        elif event.key() == Qt.Key.Key_Backtab:
+            cursor = self.textCursor()
+            block = cursor.block()
+            text = block.text()
+            if text.startswith(_INDENT):
+                cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
+                cursor.movePosition(QTextCursor.MoveOperation.Right,
+                                   QTextCursor.MoveMode.KeepAnchor, 2)
+                cursor.removeSelectedText()
+            return
+        super().keyPressEvent(event)
+
     def load_html(self, html: str):
         self.blockSignals(True)
         self.setHtml(html)
         self._modified = False
         self.blockSignals(False)
 
+    def load_markdown(self, md: str):
+        """加载 Markdown → HTML（自有渲染器，保持字体/缩进一致）。"""
+        self.blockSignals(True)
+        stripped = md.strip()
+        if stripped.startswith("<"):
+            # 遗留 HTML 格式（旧文件或导入的 HTML）
+            self.setHtml(md)
+        else:
+            body = _md_to_html(md)
+            html = '\n'.join([
+                '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0//EN" '
+                '"http://www.w3.org/TR/REC-html40/strict.dtd">',
+                '<html><head><meta name="qrichtext" content="1" />'
+                '<meta charset="utf-8" />'
+                '<style type="text/css">',
+                'p, li { white-space: pre-wrap; }',
+                'h1 { font-size: 17pt; font-weight: 700; margin-top: 0; margin-bottom: 8px; }',
+                'h2 { font-size: 15pt; font-weight: 700; }',
+                'h3 { font-size: 14pt; font-weight: 700; }',
+                'body { font-family: "Microsoft YaHei UI", "Microsoft YaHei", "sans-serif";'
+                ' font-size: 14pt; font-weight: 400; }',
+                '</style></head>',
+                f'<body>{body}</body></html>',
+            ])
+            self.setHtml(html)
+        self._modified = False
+        self.blockSignals(False)
+
     def get_html(self) -> str:
         return self.toHtml()
+
+    def get_markdown(self) -> str:
+        """将编辑器内容导出为 Markdown（遍历文档块，不丢 CJK 文本）。"""
+        from PySide6.QtGui import QTextBlockFormat
+        doc = self.document()
+        block = doc.begin()
+        result = []
+        prev_was_text = False
+
+        while block.isValid():
+            text = block.text()
+            fmt = block.blockFormat()
+
+            # 检测标题（QTextBlockFormat 的 headingLevel 属性）
+            hl = fmt.property(int(QTextBlockFormat.HeadingLevel)) if hasattr(
+                QTextBlockFormat, 'HeadingLevel') else None
+            hl = hl or 0
+
+            if hl > 0:
+                if prev_was_text:
+                    result.append('')
+                result.append(f'{"#" * hl} {text.strip()}')
+                result.append('')
+                prev_was_text = False
+            elif text.strip():
+                # 列表检测
+                is_list = fmt.property(int(QTextBlockFormat.IsListFormat)) if hasattr(
+                    QTextBlockFormat, 'IsListFormat') else None
+                if is_list:
+                    if prev_was_text:
+                        result.append('')
+                    result.append(f'- {text.strip()}')
+                    prev_was_text = False
+                else:
+                    if prev_was_text:
+                        result.append('')
+                    result.append(text)
+                    prev_was_text = True
+            else:
+                # 空块：如果之前有文本，插入空行分隔
+                if prev_was_text:
+                    result.append('')
+                    prev_was_text = False
+
+            block = block.next()
+
+        while result and result[-1] == '':
+            result.pop()
+        return '\n'.join(result) + '\n'
 
     def get_plain_text(self) -> str:
         return self.toPlainText()
@@ -72,13 +191,13 @@ class EditorWidget(QTextEdit):
     def mark_saved(self):
         self._modified = False
 
-    def apply_sync(self, html: str):
-        """接收其他窗口的同步内容。"""
+    def apply_sync(self, md: str):
+        """接收其他窗口的同步内容（Markdown 格式）。"""
         if self._syncing:
             return
         self._syncing = True
         self.blockSignals(True)
-        self.setHtml(html)
+        self.setMarkdown(md)
         self.blockSignals(False)
         self._syncing = False
 

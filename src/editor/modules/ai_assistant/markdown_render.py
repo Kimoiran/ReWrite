@@ -20,6 +20,17 @@ _TD_STYLE = (
 )
 
 
+def _leading_fullwidth_spaces(line: str) -> str:
+    """提取行首全角空格（U+3000），直接返回字面量（不在HTML中转义，避免循环断裂）。"""
+    count = 0
+    for ch in line:
+        if ch == "　":
+            count += 1
+        else:
+            break
+    return "　" * count
+
+
 def markdown_to_html(text: str) -> str:
     """将 Markdown 转为 QLabel 可显示的 HTML 子集。"""
     lines = text.split("\n")
@@ -27,17 +38,16 @@ def markdown_to_html(text: str) -> str:
     in_list = False
     list_type = None
     in_code_block = False
-    table_buffer = []  # 缓冲表格行用于表头检测
+    table_buffer = []   # 缓冲表格行
+    para_buffer = []    # 缓冲段落行（合并连续文本行为一个 <p>）
 
     def _flush_table():
-        """把缓冲的表格行渲染为 HTML 表格。"""
         if not table_buffer:
             return
-        # 第一行是表头，第二行是分隔行（忽略）
         html_parts.append(f"<table{_TABLE_STYLE}>")
         for row_idx, row_text in enumerate(table_buffer):
             if row_idx == 1:
-                continue  # 跳过 |---|---|
+                continue
             cells = [c.strip() for c in row_text.split("|")[1:-1]]
             is_header = row_idx == 0
             tag = "th" if is_header else "td"
@@ -49,10 +59,26 @@ def markdown_to_html(text: str) -> str:
         html_parts.append("</table>")
         table_buffer.clear()
 
-    for i, line in enumerate(lines):
+    def _flush_para():
+        """将缓冲的连续文本行合并为一个 <p>，缩进取自第一行。"""
+        if not para_buffer:
+            return
+        indent = _leading_fullwidth_spaces(para_buffer[0])
+        body = " ".join(_inline(l.strip()) for l in para_buffer)
+        html_parts.append(f"<p>{indent}{body}</p>")
+        para_buffer.clear()
+
+    def _is_special(stripped: str) -> bool:
+        """检测是否为特殊行（非普通段落文本）。"""
+        return (stripped.startswith(("#", "```", "- ", "* ", "> ", "|"))
+                or re.match(r"^\d+[.、]\s", stripped)
+                or stripped in ("---", "***", "___"))
+
+    for line in lines:
         stripped = line.strip()
 
         if stripped.startswith("```"):
+            _flush_para()
             if in_code_block:
                 html_parts.append("</pre>")
                 in_code_block = False
@@ -64,49 +90,66 @@ def markdown_to_html(text: str) -> str:
             html_parts.append(_escape_html(line))
             continue
 
-        # 检测表格行：| 分隔符 |
+        # 表格行
         if (stripped.startswith("|") and stripped.endswith("|")
                 and stripped.count("|") >= 3):
+            _flush_para()
             table_buffer.append(stripped)
             continue
         else:
             _flush_table()
 
+        # 空行 → 段落分隔
         if not stripped:
-            if in_list: html_parts.append(f"</{list_type}>"); in_list = False
+            _flush_para()
+            if in_list:
+                html_parts.append(f"</{list_type}>")
+                in_list = False
             continue
 
+        # 标题 / 列表 / 引用 / 分隔线
         if stripped.startswith("### "):
+            _flush_para()
             if in_list: html_parts.append(f"</{list_type}>"); in_list = False
             html_parts.append(f"<h3>{_inline(stripped[4:])}</h3>")
         elif stripped.startswith("## "):
+            _flush_para()
             if in_list: html_parts.append(f"</{list_type}>"); in_list = False
             html_parts.append(f"<h2>{_inline(stripped[3:])}</h2>")
         elif stripped.startswith("# "):
+            _flush_para()
             if in_list: html_parts.append(f"</{list_type}>"); in_list = False
             html_parts.append(f"<h1>{_inline(stripped[2:])}</h1>")
         elif stripped.startswith("- ") or stripped.startswith("* "):
+            _flush_para()
             if not in_list or list_type != "ul":
                 if in_list: html_parts.append(f"</{list_type}>")
                 html_parts.append("<ul>")
                 in_list = True; list_type = "ul"
             html_parts.append(f"<li>{_inline(stripped[2:])}</li>")
         elif re.match(r"^\d+[.、]\s", stripped):
+            _flush_para()
             if not in_list or list_type != "ol":
                 if in_list: html_parts.append(f"</{list_type}>")
                 html_parts.append("<ol>")
                 in_list = True; list_type = "ol"
             html_parts.append(f"<li>{_inline(re.sub(r'^\d+[.、]\s', '', stripped))}</li>")
         elif stripped.startswith("> "):
+            _flush_para()
             if in_list: html_parts.append(f"</{list_type}>"); in_list = False
             html_parts.append(f"<blockquote>{_inline(stripped[2:])}</blockquote>")
         elif stripped in ("---", "***", "___"):
+            _flush_para()
             if in_list: html_parts.append(f"</{list_type}>"); in_list = False
             html_parts.append("<hr>")
         else:
-            if in_list: html_parts.append(f"</{list_type}>"); in_list = False
-            html_parts.append(f"<p>{_inline(stripped)}</p>")
+            # 普通段落文本：缓冲，待遇到空行或特殊行时合并输出
+            if in_list:
+                html_parts.append(f"</{list_type}>")
+                in_list = False
+            para_buffer.append(line)
 
+    _flush_para()
     if in_list: html_parts.append(f"</{list_type}>")
     if in_code_block: html_parts.append("</pre>")
     _flush_table()

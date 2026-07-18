@@ -96,10 +96,19 @@ def import_markdown_as_chapter(file_path: Path, chapter_module=None) -> Optional
     """导入 Markdown 直接作为新章节。需要 ChapterModule 实例。"""
     if chapter_module is None:
         return None
-    ok, title, html = import_markdown(file_path)
-    if not ok:
+    try:
+        md = file_path.read_text(encoding="utf-8")
+    except OSError:
         return None
+    # 取第一行 # 标题作为章节名
+    title = ""
+    for line in md.strip().split("\n"):
+        if line.startswith("# "):
+            title = line[2:].strip()
+            break
+    if not title:
+        title = file_path.stem
     info = chapter_module.create_chapter(title)
-    if info and html:
-        chapter_module.write_chapter(info.path, f"<h2>{title}</h2>\n{html}")
+    if info:
+        chapter_module.write_chapter(info.path, md)
     return info.path if info else None

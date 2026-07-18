@@ -32,7 +32,7 @@ def pack_work(work_path: Path, output_path: Path) -> tuple[bool, str]:
             chapters_dir = work_path / "chapters"
             if chapters_dir.exists():
                 for f in sorted(chapters_dir.iterdir()):
-                    if f.suffix == ".html":
+                    if f.suffix in (".md", ".html"):
                         files_to_pack.append(f)
 
             # 模块数据文件

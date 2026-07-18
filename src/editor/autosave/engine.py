@@ -35,9 +35,9 @@ class SaveEngine(QObject):
         self._snapshot_timer.timeout.connect(self._take_snapshot)
         self._snapshot_timer.start()
 
-    def write_chapter(self, path: str, html: str) -> bool:
+    def write_chapter(self, path: str, md: str) -> bool:
         """实时写入章节文件。由编辑器内容变化时直接调用。"""
-        return self.chapter_module.write_chapter(Path(path), html)
+        return self.chapter_module.write_chapter(Path(path), md)
 
     def _take_snapshot(self):
         """定时快照：只存 .autosave/snapshots/，不动正式文件。"""
@@ -46,12 +46,12 @@ class SaveEngine(QObject):
             return
         for chap in chapters[:3]:  # 最多拍 3 个章节的快照
             try:
-                html = self.chapter_module.read_chapter(chap.path)
-                if html.count("<p>") < 2:  # 空章节不拍
+                md = self.chapter_module.read_chapter(chap.path)
+                if "\n" not in md:  # 空章节（只有标题行）不拍
                     continue
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                fname = f"{chap.path.stem}.{timestamp}.html"
-                (self.snapshot_dir / fname).write_text(html, encoding="utf-8")
+                fname = f"{chap.path.stem}.{timestamp}.md"
+                (self.snapshot_dir / fname).write_text(md, encoding="utf-8")
                 self._cleanup_old(chap.path.stem)
             except OSError:
                 pass
@@ -60,7 +60,7 @@ class SaveEngine(QObject):
         """清理旧快照。"""
         snaps = sorted(
             [f for f in self.snapshot_dir.iterdir()
-             if f.suffix == ".html" and f.stem.startswith(prefix)]
+             if f.suffix in (".md", ".html") and f.stem.startswith(prefix)]
         )
         while len(snaps) > self._max_snapshots:
             try:
@@ -68,13 +68,13 @@ class SaveEngine(QObject):
             except OSError:
                 pass
 
-    def manual_snapshot(self, path: str, html: str):
+    def manual_snapshot(self, path: str, md: str):
         """手动保存（Ctrl+S）：立即创建快照，自动清理旧快照。"""
         stem = Path(path).stem
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        fname = f"{stem}.{timestamp}.html"
+        fname = f"{stem}.{timestamp}.md"
         try:
-            (self.snapshot_dir / fname).write_text(html, encoding="utf-8")
+            (self.snapshot_dir / fname).write_text(md, encoding="utf-8")
             self._cleanup_old(stem)
         except OSError:
             pass
