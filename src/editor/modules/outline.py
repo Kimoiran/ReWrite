@@ -377,16 +377,19 @@ class OutlineDock(QDockWidget):
         if doc_mode:
             self._save_tree_content()
             self._on_save_detail()
-            self.doc_edit.setPlainText(self.module.to_text())
+            snapshot = self.module.to_text()
+            self.doc_edit.setPlainText(snapshot)
+            self._doc_snapshot = snapshot  # 保存快照，切回时比对
             self.view_toggle.setText("树形视图")
             self.detail_widget.setVisible(False)
         else:
             text = self.doc_edit.toPlainText()
-            self.module.from_text(text)
-            self.module.save()
+            # 只有用户确实编辑了文档才重新解析；未改动则直接从内存重建树
+            if text.strip() and text != getattr(self, '_doc_snapshot', ''):
+                self.module.from_text(text)
+                self.module.save()
             self._build_tree()
             self.view_toggle.setText("文档视图")
-            # 自动选中第一个条目
             if self.tree.topLevelItemCount() > 0:
                 self.tree.setCurrentItem(self.tree.topLevelItem(0))
 
@@ -527,8 +530,9 @@ class OutlineDock(QDockWidget):
 
     def _on_save_all(self):
         if self.doc_edit.isVisible():
-            text = self.doc_edit.toPlainText()
-            self.module.from_text(text)
+            text = self.doc_edit.toPlainText().strip()
+            if text:
+                self.module.from_text(text)
         else:
             # 保存展开编辑器和详情编辑器
             self._save_tree_content()

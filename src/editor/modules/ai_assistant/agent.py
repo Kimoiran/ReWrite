@@ -41,8 +41,25 @@ class AIAgent:
     def model_name(self) -> str:
         return self.config.get("model", "")
 
+    def _compress(self):
+        """压缩过长的历史记忆（保留最近 30 条，旧消息合并为摘要）。"""
+        if len(self.history) <= 80:
+            return
+        keep = self.history[-30:]
+        older = self.history[:-30]
+        summary_parts = []
+        for msg in older:
+            role = "用户" if msg["role"] == "user" else "AI"
+            c = msg.get("content", "")
+            if isinstance(c, list):
+                c = " ".join(str(x) for x in c[:5])
+            summary_parts.append(f"{role}: {str(c)[:200]}")
+        summary = {"role": "user", "content": "--- 历史对话摘要 ---\n" + "\n".join(summary_parts[-20:])}
+        self.history = [summary] + keep
+
     def _persist(self):
-        """保存当前历史到磁盘。"""
+        """保存当前历史到磁盘（自动触发压缩）。"""
+        self._compress()
         if self.work_name:
             save_chat_history(self.work_name, self.history)
 
@@ -78,19 +95,6 @@ class AIAgent:
             )
 
         self.history.append({"role": "assistant", "content": response})
-
-        if len(self.history) > 80:
-            keep = self.history[-30:]
-            older = self.history[:-30]
-            summary_parts = []
-            for msg in older:
-                role = "用户" if msg["role"] == "user" else "AI"
-                content = msg["content"][:200]
-                summary_parts.append(f"{role}: {content}")
-            summary = "--- 历史对话摘要 ---\n" + "\n".join(summary_parts[-20:])
-            keep.insert(0, {"role": "user", "content": summary})
-            self.history = keep
-
         self._persist()
         return response
 

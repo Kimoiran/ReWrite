@@ -24,7 +24,7 @@ class GetChaptersSkill(Skill):
                 if f.suffix.lower() == ".html" and not f.name.startswith("."):
                     chapters.append({"name": f.stem, "path": str(f.relative_to(work)),
                                      "size": f.stat().st_size})
-        return chapters
+        return {"chapters": chapters}
     def summarize(self, result, args=None):
         return "已读取章节列表"
 

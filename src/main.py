@@ -58,7 +58,6 @@ def main():
 
     # 根据配置确定作品和配置目录
     works_dir = get_works_dir(_project_root)
-
     workspace = Workspace(works_dir)
 
     # 静默清理崩溃标记（不弹窗）

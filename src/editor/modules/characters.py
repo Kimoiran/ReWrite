@@ -297,6 +297,7 @@ class CharacterDock(QDockWidget):
         self.module = module
         self._current_id = None
         self._renaming = False
+        self._dirty = False  # 标记是否有未保存的编辑
         self._setup_ui()
         self._build_tree()
 
@@ -426,6 +427,14 @@ class CharacterDock(QDockWidget):
         save_btn.setStyleSheet("font-size: 11px; padding: 4px 12px;")
         save_btn.clicked.connect(self._on_save)
         detail_layout.addWidget(save_btn)
+
+        # 所有编辑框变化时标记 dirty（切换角色时自动保存）
+        for w in [self.name_edit, self.aliases_edit, self.age_edit, self.occ_edit]:
+            w.textChanged.connect(self._mark_dirty)
+        for w in [self.appearance_edit, self.personality_edit, self.background_edit,
+                  self.goals_edit, self.notes_edit]:
+            w.textChanged.connect(self._mark_dirty)
+        self.gender_combo.currentIndexChanged.connect(self._mark_dirty)
 
         self.detail_widget.setVisible(False)
         layout.addWidget(self.detail_widget)
@@ -560,7 +569,13 @@ class CharacterDock(QDockWidget):
             msg += "\n\n错误：\n" + "\n".join(errors[:5])
         QMessageBox.information(self, "导入结果", msg)
 
+    def _mark_dirty(self):
+        self._dirty = True
+
     def _on_selection_changed(self, current, previous):
+        # 切换前如果有未保存编辑，自动保存
+        if self._dirty and self._current_id:
+            self._on_save()
         nid = self._get_node_id(current)
         node = self.module._find_node(self.module.nodes, nid) if nid else None
         if node and not node.is_group:
@@ -579,6 +594,7 @@ class CharacterDock(QDockWidget):
             self.background_edit.setPlainText(node.background)
             self.goals_edit.setPlainText(node.goals)
             self.notes_edit.setPlainText(node.notes)
+            self._dirty = False
         else:
             self.detail_widget.setVisible(False)
             self._current_id = None
@@ -615,6 +631,7 @@ class CharacterDock(QDockWidget):
                 notes=self.notes_edit.toPlainText(),
             )
             self.module.save()
+            self._dirty = False
 
     def _on_context_menu(self, pos):
         item = self.tree.itemAt(pos)

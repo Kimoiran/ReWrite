@@ -117,7 +117,8 @@ class ChapterListPanel(QDockWidget):
         chapters = self.chapter_module.list_chapters()
         for chap in chapters:
             item = QListWidgetItem()
-            display = f"{chap.title}  ({chap.word_count}字)"
+            fwc = f"{chap.word_count:,}"
+            display = f"{chap.title}  ({fwc}字)"
             item.setText(display)
             item.setData(Qt.ItemDataRole.UserRole, str(chap.path))
             self.list_widget.addItem(item)

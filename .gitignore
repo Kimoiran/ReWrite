@@ -4,6 +4,9 @@
 works/
 content/
 
+# 学习书（含作品特例内容，不公开）
+study/
+
 # Claude 配置
 .claude/
 
@@ -76,3 +79,4 @@ src/mcp_manager.py
 
 # Release notes (local only, not uploaded)
 docs/release-notes/
+.VSCodeCounter/

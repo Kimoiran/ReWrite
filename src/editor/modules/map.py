@@ -812,6 +812,8 @@ class MapDock(QDockWidget):
         i_a = m.addAction(f"{'取消斜体' if i_on else '斜体'}")
         m.addSeparator()
         sp_a = m.addAction("设置所属父节点")
+        m.addSeparator()
+        del_a = m.addAction("删除此节点（含子节点）")
         gr = m.addAction(f"全局节点半径 ({MapNodeItem.NODE_RADIUS})")
         rs_a = m.addAction("重置样式")
         act = m.exec(QCursor.pos())
@@ -828,6 +830,14 @@ class MapDock(QDockWidget):
             if ok:
                 pid = "" if pname == "(无父节点)" else (self.module.find_node_id(pname) or "")
                 self.module.update_node(nid, parent_id=pid)
+                self.module.save(); self._build_map()
+        elif act == del_a:
+            reply = QMessageBox.question(
+                self, "确认删除", f"确定删除节点「{name}」及其所有子节点？\n此为不可逆操作。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
+                self.module.delete_node(nid)
                 self.module.save(); self._build_map()
         elif act == r_a:
             d = QInputDialog(self); d.setWindowTitle("半径")

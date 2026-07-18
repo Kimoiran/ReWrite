@@ -127,6 +127,8 @@ class GetTimelineSkill(Skill):
     def execute(self, args, work_name=""):
         era = _load_era(args.get("work", work_name))
         data = _load(_work_path(args.get("work", work_name)) / "timeline.json")
+        if not isinstance(data, dict):
+            data = {"events": data} if isinstance(data, list) else {"events": []}
         data = _rebuild_tree(data, era)
         return _fmt_nodes(data, {"description"})
     def summarize(self, result, args=None):

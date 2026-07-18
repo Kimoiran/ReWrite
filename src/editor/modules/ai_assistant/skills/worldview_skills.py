@@ -27,7 +27,10 @@ class GetWorldviewSkill(Skill):
     def input_schema(self) -> dict:
         return {"type": "object", "properties": {}, "required": []}
     def execute(self, args, work_name=""):
-        return _fmt_nodes(_load(_work_path(args.get("work", work_name)) / "worldview.json"), {"content"})
+        data = _load(_work_path(args.get("work", work_name)) / "worldview.json")
+        if not isinstance(data, dict):
+            data = {"entries": data} if isinstance(data, list) else {"entries": []}
+        return _fmt_nodes(data, {"content"})
     def summarize(self, result, args=None):
         entries = result.get("entries", [])
         def _count(ns):

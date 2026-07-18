@@ -36,7 +36,7 @@ class MessageBubble(QFrame):
         doc = self.browser.document()
         doc.setTextWidth(480)
         content_height = int(doc.size().height()) + 16
-        self.browser.setMinimumHeight(max(40, min(content_height, 400)))
+        self.browser.setMinimumHeight(max(40, min(content_height, 800)))
         QTimer.singleShot(50, lambda: self._resize_to_content())
         bg = "#E3F2FD" if role == "user" else "#F5F7FA"
         self.browser.setStyleSheet(f"""
@@ -62,7 +62,7 @@ class MessageBubble(QFrame):
             doc = self.browser.document()
             doc.setTextWidth(w)
             h = int(doc.size().height()) + 16
-            self.browser.setMinimumHeight(max(40, min(h, 400)))
+            self.browser.setMinimumHeight(max(40, min(h, 800)))
 
 
 class LoadingBubble(QFrame):
@@ -276,6 +276,8 @@ class ChatPanel(QDockWidget):
 
     send_message_signal = Signal(str, str)
     undo_requested = Signal()
+    edit_memory_requested = Signal()
+    compress_memory_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__("AI 助手", parent)
@@ -342,6 +344,18 @@ class ChatPanel(QDockWidget):
         self.memory_label = QLabel("")
         self.memory_label.setStyleSheet("font-size: 10px; color: #8a9aaa; padding: 0 4px;")
         preset_layout.addWidget(self.memory_label)
+
+        self.edit_mem_btn = QPushButton("编辑记忆")
+        self.edit_mem_btn.setStyleSheet("font-size: 10px; padding: 2px 8px; border: none; border-radius: 8px; color: #666;")
+        self.edit_mem_btn.setToolTip("逐条查看、编辑或删除对话记录")
+        self.edit_mem_btn.clicked.connect(self._on_edit_memory)
+        preset_layout.addWidget(self.edit_mem_btn)
+
+        self.compress_btn = QPushButton("压缩记忆")
+        self.compress_btn.setStyleSheet("font-size: 10px; padding: 2px 8px; border: none; border-radius: 8px; color: #666;")
+        self.compress_btn.setToolTip("用 AI 整理并压缩历史对话")
+        self.compress_btn.clicked.connect(self._on_compress_memory)
+        preset_layout.addWidget(self.compress_btn)
 
         self.clear_btn = QPushButton("清空记忆")
         self.clear_btn.setStyleSheet("font-size: 10px; padding: 2px 8px; border: none; border-radius: 8px; color: #888;")
@@ -419,18 +433,40 @@ class ChatPanel(QDockWidget):
             self.memory_label.setText("")
 
     def _scroll_to_bottom(self):
-        """滚动消息区域到底部（布局完成后再滚动一次，确保准确）。"""
+        """滚动消息区域到底部（延迟版本，用于一次性添加消息）。"""
         scroll_area = self.findChild(QScrollArea)
         if scroll_area:
             sb = scroll_area.verticalScrollBar()
-            sb.setValue(sb.maximum())
-            # 延迟再滚一次，等布局稳定
             QTimer.singleShot(100, lambda: sb.setValue(sb.maximum()))
+
+    def _scroll_to_bottom_now(self):
+        """立即滚动到底部（用于流式更新，先处理待布局再滚）。"""
+        scroll_area = self.findChild(QScrollArea)
+        if scroll_area:
+            sb = scroll_area.verticalScrollBar()
+            QApplication.processEvents()
+            sb.setValue(sb.maximum())
 
     def add_message(self, role: str, content: str):
         bubble = MessageBubble(role, content)
         self.messages_layout.addWidget(bubble)
         self._scroll_to_bottom()
+
+    def begin_streaming_message(self) -> MessageBubble:
+        """创建流式消息气泡（替代 loading），返回气泡供后续更新。"""
+        self.hide_loading()
+        from ..markdown_render import markdown_to_html
+        bubble = MessageBubble("assistant", markdown_to_html("<em>...</em>"))
+        self.messages_layout.addWidget(bubble)
+        self._scroll_to_bottom()
+        return bubble
+
+    def update_streaming(self, bubble, accumulated_text: str):
+        """用累积的文本更新流式气泡的内容。"""
+        from ..markdown_render import markdown_to_html
+        html = markdown_to_html(accumulated_text)
+        bubble.set_content(html)
+        self._scroll_to_bottom_now()
 
     def show_loading(self):
         self._loading_bubble = LoadingBubble()
@@ -485,6 +521,12 @@ class ChatPanel(QDockWidget):
         self.input_edit.clear()
         context_scope = self.get_selected_scope()
         self.send_message_signal.emit(text, context_scope)
+
+    def _on_edit_memory(self):
+        self.edit_memory_requested.emit()
+
+    def _on_compress_memory(self):
+        self.compress_memory_requested.emit()
 
     def _on_clear(self):
         while self.messages_layout.count():

@@ -261,8 +261,13 @@ def _extract_reasoning(data: dict) -> str:
 
 
 def _make_streaming_request(agent, messages: list, system_prompt: str = "",
-                             on_reasoning=None, on_content=None) -> str:
-    """流式请求，边接收边回调 reasoning 和 content。"""
+                             on_reasoning=None, on_content=None, tools: list = None):
+    """流式请求，边接收边回调。返回 (full_text, tool_calls, reasoning)。
+
+    - on_reasoning(chunk): 收到推理内容时回调
+    - on_content(chunk): 收到正文内容时回调
+    - tools: 可选工具定义，传入后启用 function calling
+    """
     import urllib.request, urllib.error, json as _json
     config = agent.config
     api_key = config.get("api_key", "")
@@ -276,39 +281,99 @@ def _make_streaming_request(agent, messages: list, system_prompt: str = "",
     full.extend(messages)
 
     payload = {"model": model, "max_tokens": 8192, "messages": full, "stream": True}
+    if tools:
+        payload["tools"] = tools
     body = _json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=body,
         headers={"Authorization": f"Bearer {api_key}",
                  "content-type": "application/json"})
 
     result_parts = []
+    reasoning_parts = []
+    # 流式 tool_calls 累积：index → {id, function.name, function.arguments}
+    tool_calls_map = {}
+
     with urllib.request.urlopen(req, timeout=180) as resp:
-        buffer = ""
-        while True:
-            chunk = resp.read(1).decode("utf-8", errors="replace")
-            if not chunk:
+        raw_buffer = b""
+        done = False
+        while not done:
+            raw_chunk = resp.read(4096)
+            if not raw_chunk:
                 break
-            buffer += chunk
-            if buffer.endswith("\n\n"):
-                for line in buffer.strip().split("\n"):
+            raw_buffer += raw_chunk
+            # 统一换行符：\r\n → \n
+            raw_buffer = raw_buffer.replace(b"\r\n", b"\n")
+            # SSE 帧由 \n\n 分隔，确保在帧边界解码 UTF-8（避免拆散多字节中文）
+            while b"\n\n" in raw_buffer:
+                frame, raw_buffer = raw_buffer.split(b"\n\n", 1)
+                text = frame.decode("utf-8", errors="replace")
+                for line in text.strip().split("\n"):
                     if line.startswith("data: "):
                         data_str = line[6:]
                         if data_str.strip() == "[DONE]":
+                            done = True
                             break
                         try:
                             data = _json.loads(data_str)
                             delta = data.get("choices", [{}])[0].get("delta", {})
-                            if "reasoning_content" in delta and delta["reasoning_content"] and on_reasoning:
-                                on_reasoning(delta["reasoning_content"])
+
+                            if "reasoning_content" in delta and delta["reasoning_content"]:
+                                reasoning_parts.append(delta["reasoning_content"])
+                                if on_reasoning:
+                                    on_reasoning(delta["reasoning_content"])
+
                             if "content" in delta and delta["content"]:
                                 result_parts.append(delta["content"])
                                 if on_content:
                                     on_content(delta["content"])
+
+                            # 累积流式 tool_calls（按 index 合并）
+                            if "tool_calls" in delta:
+                                for tc in delta["tool_calls"]:
+                                    idx = tc.get("index", 0)
+                                    if idx not in tool_calls_map:
+                                        tool_calls_map[idx] = {
+                                            "id": "", "type": "function",
+                                            "function": {"name": "", "arguments": ""}
+                                        }
+                                    entry = tool_calls_map[idx]
+                                    if "id" in tc and tc["id"]:
+                                        entry["id"] = tc["id"]
+                                    if "function" in tc:
+                                        f = tc["function"]
+                                        if "name" in f and f["name"]:
+                                            entry["function"]["name"] = f["name"]
+                                        if "arguments" in f:
+                                            entry["function"]["arguments"] += f["arguments"]
                         except _json.JSONDecodeError:
                             pass
-                buffer = ""
+                if done:
+                    break
 
-    return "".join(result_parts)
+    full_text = "".join(result_parts)
+    reasoning = "".join(reasoning_parts)
+    tool_calls = list(tool_calls_map.values()) if tool_calls_map else []
+
+    if tool_calls:
+        import logging
+        logger = logging.getLogger("rewrite.ai")
+        logger.info(f"流式请求收集到 {len(tool_calls)} 个工具调用: "
+                    f"{[(tc['function']['name'], tc['function']['arguments'][:200]) for tc in tool_calls]}")
+
+    return full_text, tool_calls, reasoning
+
+
+_FAKE_PATTERN = ["✅ ", "已修改", "已创建", "已删除", "已更新", "已完成", "已恢复", "操作完成"]
+
+
+def _check_fake_completion(content: str) -> str:
+    """检测 AI 是否在没有调用工具的情况下假装完成了操作。"""
+    if not content:
+        return ""
+    for marker in _FAKE_PATTERN:
+        if marker in content:
+            return "未检测到工具调用——以上内容仅为 AI 文字描述，数据未被实际修改。请重新操作。"
+    return ""
 
 
 def _ensure_work_args(tool_name: str, args: dict):
@@ -380,9 +445,12 @@ def get_proposals_only(agent, message: str, context: str = ""):
     if not tool_calls:
         agent.history.append({"role": "assistant", "content": content})
         agent._persist()
-        # 如果有推理内容，附在回复前面
+        # 推理内容用特殊标记包围，在 markdown 渲染前提取
         if reasoning:
-            content = f"<details><summary>推理过程</summary>{reasoning}</details>\n\n{content}"
+            content = f"<!--REASONING-->\n{reasoning}\n<!--/REASONING-->\n\n{content}"
+        fake_check = _check_fake_completion(content)
+        if fake_check:
+            content = f"⚠️ {fake_check}\n\n{content}"
         return content
 
     # 构建传递用的 messages
