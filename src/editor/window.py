@@ -47,6 +47,13 @@ class EditorWindow(QMainWindow):
         if self._work_meta:
             bar.set_title(self._work_meta.title)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if getattr(self, '_need_icon_fix', False):
+            from ..ui.titlebar import _fix_taskbar_icon
+            _fix_taskbar_icon(self)
+            self._need_icon_fix = False
+
     def _read_module_config(self):
         from ..storage.meta import load_meta
         meta = load_meta(self.work_path / "work.json")
@@ -54,6 +61,13 @@ class EditorWindow(QMainWindow):
         self._work_meta = meta
 
     def _setup_title(self):
+        from pathlib import Path as _P
+        from PySide6.QtGui import QIcon
+        for name in ("icon.ico", "icon.png"):
+            ico = _P(__file__).resolve().parent.parent.parent / "assets" / name
+            if ico.exists():
+                self.setWindowIcon(QIcon(str(ico)))
+                break
         self.setWindowTitle("ReWrite")
         self.setMinimumSize(1100, 700)
         self.resize(1400, 900)

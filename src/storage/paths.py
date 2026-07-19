@@ -15,10 +15,12 @@ def _ensure_dir(path: Path) -> Path:
 
 
 def get_default_works_dir() -> Path:
-    """打包后默认为 ~/Documents/ReWrite/works，源码为项目下 works。"""
+    """打包后默认为 exe 同目录下的 works/，源码为项目下 works。"""
     import sys
     if getattr(sys, 'frozen', False):
-        return Path.home() / "Documents" / "ReWrite" / "works"
+        # 优先 exe 所在目录下的 works/
+        exe_dir = Path(sys.executable).parent
+        return exe_dir / "works"
     # 源码：由调用方传入项目根
     return Path.cwd() / "works"
 
@@ -42,8 +44,17 @@ def load_location_config() -> dict:
     return {"works_path": "", "config_path": ""}
 
 
+def _sanitize_path(path: str) -> str:
+    """清除路径中的不可见 Unicode 控制字符（从文件管理器复制路径时常带）。"""
+    import re
+    # 移除 Unicode bidi 控制字符、零宽字符等
+    return re.sub(r'[‎‏‪-‮⁠⁦-⁩﻿]', '', path).strip()
+
+
 def save_location_config(works_path: str = "", config_path: str = ""):
     """保存位置配置。"""
+    works_path = _sanitize_path(works_path)
+    config_path = _sanitize_path(config_path)
     _ensure_dir(LOCATION_FILE.parent)
     LOCATION_FILE.write_text(
         json.dumps({"works_path": works_path, "config_path": config_path},
@@ -52,16 +63,41 @@ def save_location_config(works_path: str = "", config_path: str = ""):
     )
 
 
-def get_works_dir(project_root: Path) -> Path:
-    """获取当前生效的 works 目录。"""
+def _path_log(msg: str):
+    """写入路径诊断日志（打包后无终端，只能写文件）。"""
+    try:
+        log = Path.home() / ".rewrite" / "path_debug.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {msg}\n")
+    except Exception:
+        pass
+
+
+def get_works_dir(project_root: Path = None) -> Path:
+    """获取当前生效的 works 目录。可跨源码/打包环境使用。"""
     loc = load_location_config()
-    if loc["works_path"]:
-        return Path(loc["works_path"])
-    # 默认
     import sys
-    if getattr(sys, 'frozen', False):
-        return Path.home() / "Documents" / "ReWrite" / "works"
-    return project_root / "works"
+    is_frozen = getattr(sys, 'frozen', False)
+    _path_log(f"get_works_dir: frozen={is_frozen}, home={Path.home()}, exe={sys.executable if is_frozen else 'N/A'}, location_config={loc}")
+    if loc["works_path"]:
+        p = Path(_sanitize_path(loc["works_path"]))
+        _path_log(f"  -> custom: {p} (exists={p.exists()})")
+        return p
+    if is_frozen:
+        exe_dir = Path(sys.executable).parent
+        p = exe_dir / "works"
+        _path_log(f"  -> frozen default: {p} (exists={p.exists()})")
+        return p
+    if project_root is not None:
+        p = project_root / "works"
+        _path_log(f"  -> source default: {p} (exists={p.exists()})")
+        return p
+    p = Path.cwd() / "works"
+    _path_log(f"  -> cwd fallback: {p} (exists={p.exists()})")
+    return p
 
 
 def get_config_dir() -> Path:
@@ -74,11 +110,12 @@ def get_config_dir() -> Path:
 
 def migrate_works(new_path: str) -> tuple[bool, str]:
     """迁移作品到新位置。如果目标已存在，合并内容。"""
-    if not new_path.strip():
+    new_path = _sanitize_path(new_path)
+    if not new_path:
         save_location_config(works_path="")
         return True, "已恢复默认位置"
 
-    dst = Path(new_path.strip())
+    dst = Path(new_path)
 
     # 获取当前作品目录
     loc = load_location_config()
@@ -86,7 +123,7 @@ def migrate_works(new_path: str) -> tuple[bool, str]:
     if old is None:
         import sys
         if getattr(sys, 'frozen', False):
-            old = Path.home() / "Documents" / "ReWrite" / "works"
+            old = Path(sys.executable).parent / "works"
         else:
             old = Path.cwd() / "works"
 

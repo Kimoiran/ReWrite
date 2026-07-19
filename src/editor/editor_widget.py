@@ -38,11 +38,12 @@ class EditorWidget(QTextEdit):
                 padding: 20px 30px;
                 border: none;
                 line-height: 1.8;
-                font-size: 14px;
             }
         """)
         self.setTabStopDistance(32)
         self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        # Ctrl+滚轮缩放：在 viewport 上装事件过滤器
+        self.viewport().installEventFilter(self)
         self.textChanged.connect(self._on_text_changed)
 
     def _on_text_changed(self):
@@ -89,6 +90,25 @@ class EditorWidget(QTextEdit):
             return
         super().keyPressEvent(event)
 
+    def eventFilter(self, obj, ev):
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import QEvent
+        if ev.type() == QEvent.Type.Wheel:
+            if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier:
+                delta = ev.angleDelta().y()
+                font = self.currentFont()
+                size = font.pointSize()
+                if size <= 0:
+                    size = 14
+                size += 2 if delta > 0 else -2
+                size = max(8, min(48, size))
+                font.setPointSize(size)
+                self.setFont(font)
+                self.document().setDefaultFont(font)
+                print(f"[Zoom] size={size}")
+                return True
+        return super().eventFilter(obj, ev)
+
     def load_html(self, html: str):
         self.blockSignals(True)
         self.setHtml(html)
@@ -115,7 +135,7 @@ class EditorWidget(QTextEdit):
                 'h2 { font-size: 15pt; font-weight: 700; }',
                 'h3 { font-size: 14pt; font-weight: 700; }',
                 'body { font-family: "Microsoft YaHei UI", "Microsoft YaHei", "sans-serif";'
-                ' font-size: 14pt; font-weight: 400; }',
+                ' font-weight: 400; }',
                 '</style></head>',
                 f'<body>{body}</body></html>',
             ])

@@ -3,7 +3,7 @@
 from pathlib import Path
 from datetime import datetime
 
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import Signal, Qt, QSize
 from PySide6.QtGui import QPainter, QColor, QFont, QPen, QCursor
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QLabel, QWidget, QHBoxLayout, QMenu,
@@ -18,6 +18,7 @@ class WorkCard(QFrame):
 
     clicked = Signal(str)  # 作品目录名
     delete_requested = Signal(str)  # 作品目录名
+    cloud_toggled = Signal(str, bool)  # 作品目录名, 新状态
 
     CARD_WIDTH = 200
     CARD_HEIGHT = 240
@@ -26,7 +27,14 @@ class WorkCard(QFrame):
         super().__init__(parent)
         self.meta = meta
         self.dir_name = dir_name
+        self._cloud_label = None
         self._setup_ui()
+
+    def sizeHint(self):
+        return QSize(self.CARD_WIDTH, self.CARD_HEIGHT)
+
+    def minimumSizeHint(self):
+        return QSize(self.CARD_WIDTH, self.CARD_HEIGHT)
 
     def _setup_ui(self):
         self.setFixedSize(self.CARD_WIDTH, self.CARD_HEIGHT)
@@ -55,6 +63,17 @@ class WorkCard(QFrame):
             f"background-color: {self.meta.cover_color};"
             f"border-radius: 12px 12px 0 0;"
         )
+        # 云同步标识（卡片右上角小徽章）
+        self._cloud_label = QLabel(" ☁ 云端 ", self)
+        self._cloud_label.setStyleSheet(
+            "color: #ffffff; font-size: 10px; font-weight: bold;"
+            "background-color: rgba(33,150,243,0.85);"
+            "border-radius: 8px; padding: 2px 6px;"
+        )
+        self._cloud_label.adjustSize()
+        self._cloud_label.move(self.CARD_WIDTH - self._cloud_label.width() - 6, 6)
+        self._cloud_label.setVisible(self.meta.cloud_enabled)
+        self._cloud_label.setAttribute(Qt.WA_TransparentForMouseEvents)
         layout.addWidget(color_bar)
 
         # 内容区
@@ -85,8 +104,11 @@ class WorkCard(QFrame):
         info_layout = QHBoxLayout()
         info_layout.setSpacing(8)
 
-        # 字数
-        word_label = QLabel(f"{format_word_count(self.meta.total_words)} 字")
+        # 章数 + 字数
+        chap_count = getattr(self.meta, 'chapter_count', 0)
+        words = format_word_count(self.meta.total_words)
+        stats_text = f"{chap_count} 章 · {words} 字" if chap_count else f"{words} 字"
+        word_label = QLabel(stats_text)
         word_label.setStyleSheet("font-size: 11px; color: #5a6a7a;")
         info_layout.addWidget(word_label)
 
@@ -112,6 +134,9 @@ class WorkCard(QFrame):
 
         layout.addWidget(content)
 
+        # 将云标签提升到最上层（不被 color_bar / content 遮挡）
+        self._cloud_label.raise_()
+
     def mousePressEvent(self, event):
         """鼠标点击发射 clicked 信号。"""
         if event.button() == Qt.MouseButton.LeftButton:
@@ -121,18 +146,50 @@ class WorkCard(QFrame):
     def contextMenuEvent(self, event):
         """右键菜单。"""
         menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #ffffff;
+                border: 1px solid #d0d7de;
+                border-radius: 6px;
+                padding: 4px;
+            }
+            QMenu::item {
+                color: #333333;
+                padding: 6px 24px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #e8f0fe;
+                color: #1a73e8;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #e0e0e0;
+                margin: 4px 8px;
+            }
+        """)
 
+        # 云端同步切换
+        if self.meta.cloud_enabled:
+            cloud_action = menu.addAction("☁  取消云端同步")
+        else:
+            cloud_action = menu.addAction("☁  同步到云端")
+        menu.addSeparator()
         delete_action = menu.addAction("🗑  删除作品")
         menu.addSeparator()
         open_action = menu.addAction("📂  打开所在目录")
 
         action = menu.exec(event.globalPos())
-        if action == delete_action:
+        if action == cloud_action:
+            new_state = not self.meta.cloud_enabled
+            self.cloud_toggled.emit(self.dir_name, new_state)
+        elif action == delete_action:
             self.delete_requested.emit(self.dir_name)
         elif action == open_action:
             import subprocess
             from ..storage.workspace import Workspace
-            ws = Workspace(Path.cwd() / "works")
+            from ..storage.paths import get_works_dir
+            ws = Workspace(get_works_dir())
             path = ws.get_work_path(self.meta)
             if path.exists():
                 subprocess.run(f'explorer "{path}"', shell=True)

@@ -27,12 +27,22 @@ class GetWorldviewSkill(Skill):
     def input_schema(self) -> dict:
         return {"type": "object", "properties": {}, "required": []}
     def execute(self, args, work_name=""):
-        data = _load(_work_path(args.get("work", work_name)) / "worldview.json")
+        work = args.get("work", work_name)
+        path = _work_path(work) / "worldview.json"
+        data = _load(path)
+        print(f"[GetWorldview] work={work} path={path} exists={path.exists()} entries={len(data.get('entries', []))}")
         if not isinstance(data, dict):
             data = {"entries": data} if isinstance(data, list) else {"entries": []}
-        return _fmt_nodes(data, {"content"})
+        result = _fmt_nodes(data, {"content"})
+        if isinstance(result, dict):
+            print(f"[GetWorldview] result keys={list(result.keys())} entries={len(result.get('entries', []))}")
+        else:
+            print(f"[GetWorldview] WARNING: result is {type(result).__name__}, not dict!")
+        return result
     def summarize(self, result, args=None):
         entries = result.get("entries", [])
+        if not isinstance(entries, list):
+            entries = []
         def _count(ns):
             cnt = 0
             for e in ns:
@@ -42,7 +52,9 @@ class GetWorldviewSkill(Skill):
             return cnt
         total = _count(entries)
         if not entries:
-            return "世界观为空"
+            if result.get("success") is True and not any(k in result for k in ("entries", "nodes", "events", "chapters")):
+                return "正在读取世界观数据"
+            return "世界观暂无条目"
         lines = []
         def _walk(ns, depth):
             for e in ns:
@@ -104,7 +116,7 @@ class CreateWorldviewEntrySkill(Skill):
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "条目标题"},
-                "content": {"type": "string", "description": "内容（HTML）"},
+                "content": {"type": "string", "description": "内容（支持 Markdown 表格/标题/列表）"},
                 "parent_title": {"type": "string", "description": "父条目标题（可选，不填则创建在根级别）"},
             },
             "required": ["title"],
@@ -114,7 +126,7 @@ class CreateWorldviewEntrySkill(Skill):
         data = _load(work / "worldview.json")
         entries = data.get("entries", [])
         entry = {"id": uuid.uuid4().hex[:12], "title": args["title"],
-                 "content": args.get("content", "<p></p>"), "children": [],
+                 "content": args.get("content", ""), "children": [],
                  "order": len(entries)}
         # 检查同级下是否有同名条目，防止重复创建
         parent_title = args.get("parent_title", "")

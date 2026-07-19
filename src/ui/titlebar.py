@@ -105,10 +105,61 @@ class TitleBar(QWidget):
         super().mouseDoubleClickEvent(event)
 
 
+def _fix_taskbar_icon(window):
+    """强制 Windows 为 frameless 窗口正确显示任务栏图标。
+    三步：AppUserModelID / WS_EX_APPWINDOW / WM_SETICON（大+小图标）。"""
+    try:
+        import ctypes
+        from pathlib import Path
+
+        hwnd = int(window.winId())
+        if not hwnd:
+            return
+
+        user32 = ctypes.windll.user32
+        shell32 = ctypes.windll.shell32
+
+        # 0. 确保 AppUserModelID（影响任务栏图标分组）
+        try:
+            shell32.SetCurrentProcessExplicitAppUserModelID("Kimoiran.ReWrite")
+        except Exception:
+            pass
+
+        # 1. WS_EX_APPWINDOW + WS_SYSMENU — 恢复系统菜单和图标支持
+        GWL_EXSTYLE = -20
+        GWL_STYLE = -16
+        WS_EX_APPWINDOW = 0x40000
+        WS_SYSMENU = 0x80000
+        try:
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE,
+                user32.GetWindowLongW(hwnd, GWL_EXSTYLE) | WS_EX_APPWINDOW)
+            user32.SetWindowLongW(hwnd, GWL_STYLE,
+                user32.GetWindowLongW(hwnd, GWL_STYLE) | WS_SYSMENU)
+        except Exception:
+            pass
+
+        # 2. WM_SETICON — 直接绕过 Qt 设 Windows 原生图标
+        ico = Path(__file__).resolve().parent.parent.parent / "assets" / "icon.ico"
+        if ico.exists():
+            hicon_small = user32.LoadImageW(0, str(ico), 1, 16, 16, 0x10)
+            hicon_big = user32.LoadImageW(0, str(ico), 1, 32, 32, 0x10)
+            WM_SETICON = 0x80
+            ICON_BIG = 1
+            ICON_SMALL = 0
+            if hicon_small:
+                user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
+            if hicon_big:
+                user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
+    except Exception:
+        pass
+
+
 def make_frameless(window):
-    """在构造函数最开头调用：设置无边框标志（不创建任何 widget，防止丢失）。"""
+    """在构造函数最开头调用：设置无边框标志。"""
     flags = window.windowFlags()
     window.setWindowFlags(flags | Qt.WindowType.FramelessWindowHint)
+    # FramelessWindowHint 会导致 Windows 任务栏图标变默认，需在 show 后强制修复
+    window._need_icon_fix = True
 
 
 def attach_title_bar(window, title=None):

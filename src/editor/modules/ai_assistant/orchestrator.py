@@ -57,8 +57,39 @@ class AIOrchestrator:
             except Exception:
                 a = {}
             self._ensure_work_args(name, a)
-            skill = self._get_skill(name)
-            desc = skill.summarize({"success": True}, a) if skill and hasattr(skill, "summarize") else name
+            if name.startswith("get_") or name.startswith("read_") or name.startswith("search_"):
+                # 读工具：描述正在做什么
+                if name == "get_worldview":
+                    desc = "正在读取世界观数据"
+                elif name == "get_characters":
+                    g = a.get("group", "")
+                    desc = f"正在读取人物设定卡「{g}」" if g else "正在读取人物设定卡"
+                elif name == "get_outline":
+                    desc = "正在读取大纲"
+                elif name == "get_timeline":
+                    desc = "正在读取时间线"
+                elif name == "get_map":
+                    desc = "正在读取地图数据"
+                elif name == "read_chapter":
+                    desc = f"正在读取「{a.get('chapter', '')}」"
+                elif name == "search_chapters":
+                    desc = f"正在搜索章节: {a.get('query', '')}"
+                else:
+                    desc = f"正在执行 {name}"
+            else:
+                # 写工具：描述准备做什么
+                n = a.get("name", a.get("title", ""))
+                if name.startswith("create_"):
+                    desc = f"将创建「{n}」" if n else f"将执行 {name}"
+                elif name.startswith("update_"):
+                    f = a.get("field", "")
+                    desc = f"将修改「{n}」的「{f}」" if n and f else f"将执行 {name}"
+                elif name.startswith("delete_"):
+                    desc = f"将删除「{n}」⚠" if n else f"将执行 {name}⚠"
+                elif name.startswith("add_"):
+                    desc = f"将添加「{n}」" if n else f"将执行 {name}"
+                else:
+                    desc = f"将执行 {name}"
             descs.append((name, a, desc))
         return descs
 

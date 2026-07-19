@@ -146,7 +146,7 @@ class GeneralSettingsPage(QWidget):
         self.works_path_edit.setMinimumWidth(360)
 
         loc = load_location_config()
-        _current = _Path.cwd() / "works" if not getattr(_sys, 'frozen', False) else _Path.home() / "Documents" / "ReWrite" / "works"
+        _current = get_works_dir()
         if loc.get("works_path"):
             self.works_path_edit.setText(loc["works_path"])
             self.works_path_edit.setPlaceholderText(f"默认位置：{_current}")

@@ -2,6 +2,7 @@
 
 import json
 import random
+import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -67,6 +68,7 @@ class WorkMeta:
     cover_color: str = ""
     cloud_enabled: bool = False
     date_era: str = ""  # 时间线纪元名，如「神启」「星历」「帝国历」。空=无纪元
+    work_id: str = ""  # UUID 唯一标识，用于目录命名和去重
 
     def __post_init__(self):
         if isinstance(self.git, dict):
@@ -86,8 +88,7 @@ class WorkMeta:
 
     @staticmethod
     def new(title: str, work_type: str = "novel",
-            modules: list = None, git_enabled: bool = True,
-            git_remote: str = "", git_auto_push: bool = False,
+            modules: list = None, cloud_enabled: bool = False,
             date_era: str = "") -> "WorkMeta":
         now = datetime.now(timezone.utc).isoformat()
         if modules is None:
@@ -98,18 +99,12 @@ class WorkMeta:
             title=title,
             work_type=work_type,
             modules=modules,
-            git=GitConfig(
-                enabled=git_enabled,
-                remote=GitRemote(
-                    enabled=bool(git_remote),
-                    url=git_remote,
-                    auto_push=git_auto_push,
-                ),
-            ),
             created=now,
             updated=now,
             cover_color=random.choice(COVER_COLORS),
+            cloud_enabled=cloud_enabled,
             date_era=date_era,
+            work_id=uuid.uuid4().hex,
         )
 
 

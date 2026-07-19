@@ -336,12 +336,40 @@ class TimelineDock(QDockWidget):
                 if e.children:
                     _add(e.children, item)
         _add(self.module.events, None)
-        self.tree.expandAll()
         self.tree.blockSignals(False)
 
     def _refresh(self):
-        """外部调用重建树。"""
+        """重建树，保留已展开/折叠状态。"""
+        expanded = set()
+        def _collect(item):
+            for i in range(item.childCount()):
+                child = item.child(i)
+                eid = child.data(0, Qt.ItemDataRole.UserRole)
+                if eid and child.isExpanded():
+                    expanded.add(eid)
+                _collect(child)
+        for i in range(self.tree.topLevelItemCount()):
+            top = self.tree.topLevelItem(i)
+            eid = top.data(0, Qt.ItemDataRole.UserRole)
+            if eid and top.isExpanded():
+                expanded.add(eid)
+            _collect(top)
+
         self._build_tree()
+
+        def _restore(item):
+            for i in range(item.childCount()):
+                child = item.child(i)
+                eid = child.data(0, Qt.ItemDataRole.UserRole)
+                if eid and eid in expanded:
+                    child.setExpanded(True)
+                _restore(child)
+        for i in range(self.tree.topLevelItemCount()):
+            top = self.tree.topLevelItem(i)
+            eid = top.data(0, Qt.ItemDataRole.UserRole)
+            if eid and eid in expanded:
+                top.setExpanded(True)
+            _restore(top)
 
     def _on_add(self):
         dialog = EventEditDialog()

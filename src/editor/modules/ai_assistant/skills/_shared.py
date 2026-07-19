@@ -33,10 +33,8 @@ def _works_dir() -> Path:
     env = os.environ.get("REWRITE_WORKS_DIR", "")
     if env:
         return Path(env)
-    try:
-        return Path(__file__).resolve().parent.parent.parent.parent.parent.parent / "works"
-    except NameError:
-        return Path.home() / "Documents" / "ReWrite" / "works"
+    from .....storage.paths import get_works_dir
+    return get_works_dir()
 
 
 def _work_path(name: str) -> Path:

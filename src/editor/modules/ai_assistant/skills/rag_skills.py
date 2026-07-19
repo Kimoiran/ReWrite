@@ -19,7 +19,7 @@ class SearchChaptersSkill(Skill):
 
     @property
     def description(self) -> str:
-        return "搜索章节正文内容，按语义相关性返回最匹配的段落（用于找某句话在哪、找相关描写等）"
+        return "仅搜索【章节正文】。人物/大纲/世界观/时间线/地图请用各自的 get 工具，勿用此工具"
 
     @property
     def input_schema(self) -> dict:

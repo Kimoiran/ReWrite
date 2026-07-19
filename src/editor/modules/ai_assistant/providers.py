@@ -60,7 +60,7 @@ class ClaudeProvider(AIProvider):
         for m in messages:
             if m["role"] in ("user", "assistant"):
                 claude.append({"role": m["role"], "content": m["content"]})
-        body = json.dumps({"model": self.model, "max_tokens": 4096,
+        body = json.dumps({"model": self.model, "max_tokens": 32768,
             "system": system_prompt or "", "messages": claude}).encode("utf-8")
         req = urllib.request.Request(f"{self.api_url}/v1/messages", data=body,
             headers={"x-api-key": self.api_key, "anthropic-version": "2023-06-01",
@@ -82,7 +82,7 @@ class ClaudeProvider(AIProvider):
             if m["role"] in ("user", "assistant"):
                 claude.append({"role": m["role"], "content": m["content"]})
         tools = get_claude_tools()
-        body = json.dumps({"model": self.model, "max_tokens": 4096,
+        body = json.dumps({"model": self.model, "max_tokens": 32768,
             "system": (system_prompt or "") + "\n\n可用工具: " + ", ".join(t["name"] for t in tools),
             "messages": claude, "tools": tools}).encode("utf-8")
         req = urllib.request.Request(f"{self.api_url}/v1/messages", data=body,
@@ -114,7 +114,7 @@ class ClaudeProvider(AIProvider):
         claude.append({"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": tool_use["id"], "content": tool_result}
         ]})
-        body2 = json.dumps({"model": self.model, "max_tokens": 4096,
+        body2 = json.dumps({"model": self.model, "max_tokens": 32768,
             "system": system_prompt or "", "messages": claude}).encode("utf-8")
         req2 = urllib.request.Request(f"{self.api_url}/v1/messages", data=body2,
             headers={"x-api-key": self.api_key, "anthropic-version": "2023-06-01",
@@ -144,7 +144,7 @@ class OpenAIProvider(AIProvider):
         if system_prompt:
             full.append({"role": "system", "content": system_prompt})
         full.extend(messages)
-        body = json.dumps({"model": self.model, "max_tokens": 4096, "messages": full}).encode("utf-8")
+        body = json.dumps({"model": self.model, "max_tokens": 32768, "messages": full}).encode("utf-8")
         req = urllib.request.Request(f"{self.api_url}/chat/completions", data=body,
             headers={"Authorization": f"Bearer {self.api_key}",
                      "content-type": "application/json", "User-Agent": "ReWrite/1.0"})
@@ -165,7 +165,7 @@ class OpenAIProvider(AIProvider):
             full.append({"role": "system", "content": system_prompt})
         full.extend(messages)
         tools = get_openai_tools()
-        body = json.dumps({"model": self.model, "max_tokens": 4096,
+        body = json.dumps({"model": self.model, "max_tokens": 32768,
             "messages": full, "tools": tools}).encode("utf-8")
         req = urllib.request.Request(f"{self.api_url}/chat/completions", data=body,
             headers={"Authorization": f"Bearer {self.api_key}",
@@ -204,7 +204,7 @@ class OpenAIProvider(AIProvider):
             full.append({"role": "tool", "tool_call_id": tc["id"], "content": r})
             executed.append(f"{name}({args.get('name','') or args.get('title','')})")
 
-        body2 = json.dumps({"model": self.model, "max_tokens": 4096, "messages": full}).encode("utf-8")
+        body2 = json.dumps({"model": self.model, "max_tokens": 32768, "messages": full}).encode("utf-8")
         req2 = urllib.request.Request(f"{self.api_url}/chat/completions", data=body2,
             headers={"Authorization": f"Bearer {self.api_key}",
                      "content-type": "application/json", "User-Agent": "ReWrite/1.0"})
@@ -233,7 +233,7 @@ def _make_chat_request(agent, messages: list, system_prompt: str = "", tools: li
     if system_prompt and system_prompt.strip():
         full.append({"role": "system", "content": system_prompt})
     full.extend(messages)
-    payload = {"model": model, "max_tokens": 8192, "messages": full}
+    payload = {"model": model, "max_tokens": 32768, "messages": full}
     if tools:
         payload["tools"] = tools
     body = json.dumps(payload).encode("utf-8")
@@ -280,7 +280,7 @@ def _make_streaming_request(agent, messages: list, system_prompt: str = "",
         full.append({"role": "system", "content": system_prompt})
     full.extend(messages)
 
-    payload = {"model": model, "max_tokens": 8192, "messages": full, "stream": True}
+    payload = {"model": model, "max_tokens": 32768, "messages": full, "stream": True}
     if tools:
         payload["tools"] = tools
     body = _json.dumps(payload).encode("utf-8")
@@ -420,7 +420,7 @@ def get_proposals_only(agent, message: str, context: str = ""):
     full.extend(recent)
     tools = get_openai_tools()
 
-    body = _j.dumps({"model": provider.model, "max_tokens": 4096,
+    body = _j.dumps({"model": provider.model, "max_tokens": 32768,
                       "messages": full, "tools": tools}).encode("utf-8")
 
     import urllib.request, urllib.error
@@ -478,7 +478,7 @@ def get_final_response(agent, messages: list, system_prompt: str = ""):
         config.get("api_url", ""),
     )
 
-    body = _j.dumps({"model": provider.model, "max_tokens": 4096,
+    body = _j.dumps({"model": provider.model, "max_tokens": 32768,
                       "messages": messages}).encode("utf-8")
     req = urllib.request.Request(f"{provider.api_url}/chat/completions", data=body,
         headers={"Authorization": f"Bearer {provider.api_key}",

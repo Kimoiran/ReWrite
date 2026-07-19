@@ -8,7 +8,8 @@ from typing import Optional, List
 
 import shutil as _su
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QFont
 
 
 def _rotate_backup(file_path: str, max_keep: int = 20):
@@ -255,15 +256,66 @@ class WorldviewDock(QDockWidget):
         self.editor_title.setStyleSheet("font-size: 12px; font-weight: bold; color: #1a2332;")
         editor_layout.addWidget(self.editor_title)
 
+        # 格式化工具栏：插入 Markdown 标记 → 重渲染
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(4)
+        btn_style = """
+            QPushButton { font-size: 11px; padding: 2px 8px;
+                border: 1px solid #d0d0d0; border-radius: 3px;
+                background: #f5f5f5; color: #333; }
+            QPushButton:hover { background: #e8e8e8; }
+        """
+        bold_btn = QPushButton("B")
+        bold_btn.setStyleSheet(btn_style + "QPushButton { font-weight: bold; }")
+        bold_btn.setToolTip("加粗"); bold_btn.clicked.connect(lambda: self._md_action("**"))
+        toolbar.addWidget(bold_btn)
+
+        italic_btn = QPushButton("I")
+        italic_btn.setStyleSheet(btn_style + "QPushButton { font-style: italic; }")
+        italic_btn.setToolTip("斜体"); italic_btn.clicked.connect(lambda: self._md_action("*"))
+        toolbar.addWidget(italic_btn)
+
+        h1_btn = QPushButton("H1"); h1_btn.setStyleSheet(btn_style)
+        h1_btn.setToolTip("一级标题"); h1_btn.clicked.connect(lambda: self._md_action("# ", line_prefix=True))
+        toolbar.addWidget(h1_btn)
+
+        h2_btn = QPushButton("H2"); h2_btn.setStyleSheet(btn_style)
+        h2_btn.setToolTip("二级标题"); h2_btn.clicked.connect(lambda: self._md_action("## ", line_prefix=True))
+        toolbar.addWidget(h2_btn)
+
+        h3_btn = QPushButton("H3"); h3_btn.setStyleSheet(btn_style)
+        h3_btn.setToolTip("三级标题"); h3_btn.clicked.connect(lambda: self._md_action("### ", line_prefix=True))
+        toolbar.addWidget(h3_btn)
+
+        list_btn = QPushButton("- List"); list_btn.setStyleSheet(btn_style)
+        list_btn.setToolTip("无序列表"); list_btn.clicked.connect(lambda: self._md_action("- ", line_prefix=True))
+        toolbar.addWidget(list_btn)
+
+        table_btn = QPushButton("+ Table"); table_btn.setStyleSheet(btn_style)
+        table_btn.setToolTip("插入3列表格"); table_btn.clicked.connect(self._md_insert_table)
+        toolbar.addWidget(table_btn)
+
+        toolbar.addStretch()
+        editor_layout.addLayout(toolbar)
+
         self.editor = QTextEdit()
-        self.editor.setPlaceholderText("在此写世界观设定内容...\n\n支持富文本格式：加粗、标题、列表等。")
+        self.editor.textChanged.connect(lambda: setattr(self, '_md_source', None))
+        self.editor.setPlaceholderText("在此编写世界观设定...\n工具栏支持加粗/斜体/标题/列表/表格")
         self.editor.setStyleSheet("""
             QTextEdit {
                 border: 1px solid #e0e8f0; border-radius: 4px;
                 padding: 8px; font-size: 14px; line-height: 1.8;
+                font-family: 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
             }
         """)
         editor_layout.addWidget(self.editor, stretch=1)
+
+        # 自动保存：停止输入 1 秒后自动存盘
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(1000)
+        self._autosave_timer.timeout.connect(self._auto_save)
+        self.editor.textChanged.connect(self._autosave_timer.start)
 
         splitter.addWidget(editor_widget)
         splitter.setSizes([200, 400])
@@ -279,6 +331,7 @@ class WorldviewDock(QDockWidget):
                 item = QTreeWidgetItem(parent)
                 item.setText(0, e.title)
                 item.setData(0, Qt.ItemDataRole.UserRole, e.id)
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
                 if e.children:
                     _add(e.children, item)
         for e in self.module.entries:
@@ -324,7 +377,15 @@ class WorldviewDock(QDockWidget):
         if entry:
             self._current_id = entry.id
             self.editor_title.setText(f"✏ {entry.title}")
-            self.editor.setHtml(entry.content)
+            content = entry.content
+            self.editor.blockSignals(True)
+            if content.strip().startswith("<"):
+                self._md_source = content  # HTML 格式
+                self.editor.setHtml(content)
+            else:
+                self._md_source = content  # Markdown 格式，存盘原样保留
+                self.editor.setMarkdown(content)
+            self.editor.blockSignals(False)
             self.editor.setEnabled(True)
         else:
             self._current_id = None
@@ -332,9 +393,223 @@ class WorldviewDock(QDockWidget):
             self.editor.clear()
             self.editor.setEnabled(False)
 
+    def _md_action(self, marker, line_prefix=False):
+        """插入 Markdown 标记 → 重渲染。"""
+        cursor = self.editor.textCursor()
+        pos = cursor.position()
+        if line_prefix:
+            cursor.movePosition(cursor.MoveOperation.StartOfBlock)
+            cursor.insertText(marker)
+        elif cursor.hasSelection():
+            start = cursor.selectionStart()
+            end = cursor.selectionEnd()
+            cursor.setPosition(end)
+            cursor.insertText(marker)
+            cursor.setPosition(start)
+            cursor.insertText(marker)
+        else:
+            cursor.insertText(marker * 2)
+            cursor.setPosition(cursor.position() - len(marker))
+        self.editor.setTextCursor(cursor)
+        self._rerender_md()
+
+    def _md_insert_table(self):
+        """插入 Markdown 表格模板 → 重渲染。"""
+        table = "\n| 列A | 列B | 列C |\n|------|------|------|\n|  |  |  |\n"
+        cursor = self.editor.textCursor()
+        cursor.insertText(table)
+        self.editor.setTextCursor(cursor)
+        self._rerender_md()
+
+    def _rerender_md(self):
+        """用 setMarkdown 重渲染编辑器内容（保留光标位置）。"""
+        cursor = self.editor.textCursor()
+        pos = cursor.position()
+        md = self._get_md_content()
+        self.editor.blockSignals(True)
+        self.editor.setMarkdown(md)
+        # 恢复光标（不超过新文本长度）
+        new_len = len(self.editor.toPlainText())
+        cursor = self.editor.textCursor()
+        cursor.setPosition(min(pos, new_len))
+        self.editor.setTextCursor(cursor)
+        self.editor.blockSignals(False)
+
+    def _get_md_content(self) -> str:
+        """遍历文档块提取 Markdown（处理表格/列表/加粗/斜体，不丢 CJK）。"""
+        from PySide6.QtGui import QTextTable, QTextList
+        doc = self.editor.document()
+        block = doc.begin()
+        lines = []
+        seen_tables = set()
+        prev_empty = False
+
+        while block.isValid():
+            text = block.text()
+            fmt = block.blockFormat()
+            hl = fmt.headingLevel() if hasattr(fmt, 'headingLevel') else 0
+            hl = hl or 0
+
+            # 列表项
+            lst = block.textList()
+            if lst is not None:
+                indent = '  ' * (lst.format().indent() if hasattr(lst.format(), 'indent') else 0)
+                md_text = self._block_to_md(block)
+                lines.append(f'{indent}- {md_text}')
+                prev_empty = False
+                block = block.next()
+                continue
+
+            # 表格：收集所有表格块，合并为 Markdown 表格
+            tbl = block.begin() if block.begin() != block.end() else None
+            if tbl is not None:
+                try:
+                    frame = doc.rootFrame()
+                    # 搜索当前 block 属于哪个 QTextTable
+                    tbl_obj = None
+                    for child in frame.childFrames():
+                        if isinstance(child, QTextTable):
+                            for r in range(child.rows()):
+                                for c in range(child.columns()):
+                                    cell = child.cellAt(r, c)
+                                    if cell.firstPosition() <= block.position() <= cell.lastPosition():
+                                        tbl_obj = child
+                                        break
+                    if tbl_obj is not None and id(tbl_obj) not in seen_tables:
+                        seen_tables.add(id(tbl_obj))
+                        md_table = self._table_to_md(tbl_obj)
+                        if lines and lines[-1] != '':
+                            lines.append('')
+                        lines.append(md_table)
+                        lines.append('')
+                        prev_empty = False
+                        # 跳到表格后
+                        last_cell = tbl_obj.cellAt(tbl_obj.rows() - 1, tbl_obj.columns() - 1)
+                        cursor = self.editor.textCursor()
+                        cursor.setPosition(last_cell.lastPosition())
+                        block = cursor.block().next()
+                        continue
+                except Exception:
+                    pass
+
+            # 标题
+            if hl > 0:
+                if lines and lines[-1] != '':
+                    lines.append('')
+                md_text = self._block_to_md(block)
+                lines.append('#' * hl + ' ' + md_text)
+                lines.append('')
+                prev_empty = False
+            elif text.strip():
+                if prev_empty:
+                    lines.append('')
+                md_text = self._block_to_md(block)
+                lines.append(md_text)
+                prev_empty = True
+            else:
+                if prev_empty:
+                    lines.append('')
+                    prev_empty = False
+            block = block.next()
+
+        while lines and lines[-1] == '':
+            lines.pop()
+        return '\n'.join(lines) + '\n'
+
+    def _block_to_md(self, block) -> str:
+        """将单个 block 的文本转为带内联格式的 Markdown。"""
+        text = block.text()
+        if not text:
+            return text
+        # 立即提取格式属性（避免 C++ 对象被 GC）
+        from PySide6.QtGui import QFont
+        fragments = []
+        for f_range in block.textFormats():
+            start = f_range.start
+            length = f_range.length
+            try:
+                bold = f_range.format.fontWeight() == QFont.Weight.Bold
+                italic = f_range.format.fontItalic()
+            except RuntimeError:
+                bold = False
+                italic = False
+            fragments.append((start, length, bold, italic))
+        if not fragments:
+            return text
+        fragments.sort(key=lambda x: x[0])
+
+        result = []
+        i = 0
+        while i < len(text):
+            bold = False
+            italic = False
+            for start, length, b, it in fragments:
+                if start <= i < start + length:
+                    bold = b
+                    italic = it
+                    break
+            boundary = len(text)
+            for start, length, b, it in fragments:
+                if start > i and start < boundary:
+                    boundary = start
+                if start <= i < start + length:
+                    end = start + length
+                    if end < boundary:
+                        boundary = end
+            chunk = text[i:boundary]
+            if bold and italic and chunk.strip():
+                result.append(f'***{chunk}***')
+            elif bold and chunk.strip():
+                result.append(f'**{chunk}**')
+            elif italic and chunk.strip():
+                result.append(f'*{chunk}*')
+            else:
+                result.append(chunk)
+            i = boundary
+
+        return ''.join(result)
+
+    def _table_to_md(self, tbl) -> str:
+        """将 QTextTable 转为 Markdown 表格字符串。"""
+        rows = tbl.rows()
+        cols = tbl.columns()
+        md_rows = []
+        for r in range(rows):
+            cells = []
+            for c in range(cols):
+                cell = tbl.cellAt(r, c)
+                # 提取 cell 内所有 block 的文本
+                cell_lines = []
+                cell_block = cell.begin()
+                while cell_block.isValid() and cell_block.position() < cell.lastPosition() + 1:
+                    cell_md = self._block_to_md(cell_block)
+                    if cell_md.strip():
+                        cell_lines.append(cell_md.strip())
+                    cell_block = cell_block.next()
+                    if cell_block.position() >= cell.lastPosition():
+                        break
+                cells.append(' '.join(cell_lines))
+            md_rows.append('| ' + ' | '.join(cells) + ' |')
+        # 插入分隔行（第 1 行之后）
+        if len(md_rows) > 1:
+            sep = '|' + '|'.join(['------' for _ in range(cols)]) + '|'
+            md_rows.insert(1, sep)
+        return '\n'.join(md_rows)
+
+    def _auto_save(self):
+        """停止输入 1 秒后自动存盘（仅当正在编辑条目时）。"""
+        if self._current_id:
+            self._on_save_current()
+
     def _on_save_current(self):
         if self._current_id:
-            content = self.editor.toHtml()
+            if getattr(self, '_md_source', None) is not None:
+                # AI 写入的 Markdown，未被手改 → 原样保存
+                content = self._md_source
+            else:
+                # 用户手改过 → 自定义 MD 序列化（表格/加粗/斜体/标题，不丢 CJK）
+                content = self._get_md_content()
+                self._md_source = content
             self.module.update_entry(self._current_id, content=content)
 
     def _on_save_all(self):
@@ -377,6 +652,12 @@ class WorldviewDock(QDockWidget):
                 self.module.save()
                 self._build_tree()
         elif action == rename_act:
-            self.tree.editItem(item, 0)
+            eid = self._get_entry_id(item)
+            if eid:
+                new_title, ok = QInputDialog.getText(self, "重命名", "新标题:", text=item.text(0))
+                if ok and new_title.strip():
+                    self.module.update_entry(eid, title=new_title.strip())
+                    self.module.save()
+                    self._build_tree()
         elif action == delete_act:
             self._on_delete()

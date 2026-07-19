@@ -63,14 +63,8 @@ Desktop.ini
 *.tmp
 
 # Temp test scripts and unused tools
-scripts/check_*.py
-scripts/test_*.py
-scripts/build_*.py
-scripts/clean_*.py
-scripts/backup.py
-scripts/generate_icon.py
-scripts/make_ico.py
-scripts/release.py
+scripts/*
+!scripts/build_exe.py
 mcp/test_*.py
 
 # MCP server (removed)
@@ -79,4 +73,5 @@ src/mcp_manager.py
 
 # Release notes (local only, not uploaded)
 docs/release-notes/
+doc/
 .VSCodeCounter/

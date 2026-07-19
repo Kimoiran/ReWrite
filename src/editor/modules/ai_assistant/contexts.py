@@ -65,7 +65,7 @@ def collect_context(scope: list[str], current_md: str = "",
         if wv_text.strip():
             parts.append(f"<<<世界观 (worldview) — 世界设定，分章节记录>>>\n{wv_text[:8000]}")
         else:
-            parts.append("<<<世界观 (worldview) — (当前为空) 每条有 title/content，可无限嵌套层级>>>\n(暂无内容)")
+            parts.append("<<<世界观 (worldview) — 已启用，当前无条目。每条有 title/content/children，可用 get_worldview 读取>>>\n(无条目，可通过 create_worldview_entry 添加)")
 
     if "work_meta" in scope and work_meta:
         info = []

@@ -32,15 +32,25 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("ReWrite")
     app.setOrganizationName("ReWrite")
-    app.setApplicationVersion("0.1.0")
+    app.setApplicationVersion("1.1.3")
+    # Windows 任务栏图标：AppUserModelID 必须在窗口创建前设置
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Kimoiran.ReWrite")
+    except Exception:
+        pass
 
     # 应用现代主题
     setup_palette(app)
 
     # 设置应用图标（任务栏和标题栏）
-    icon_path = _project_root / "assets" / "icon.png"
-    if icon_path.exists():
-        app.setWindowIcon(QIcon(str(icon_path)))
+    # Windows 任务栏需要 .ico 格式，.png 可能不生效
+    icon_paths = [_project_root / "assets" / "icon.ico",
+                  _project_root / "assets" / "icon.png"]
+    for p in icon_paths:
+        if p.exists():
+            app.setWindowIcon(QIcon(str(p)))
+            break
 
     # 全局字体
     font = QFont()
@@ -85,8 +95,15 @@ def main():
 
     def open_settings():
         from src.settings.window import SettingsWindow
+        old_path = workspace.works_dir
         dialog = SettingsWindow(launcher)
         dialog.exec()
+        # 设置关闭后检查作品路径是否变更，如有变更则刷新
+        new_works_dir = get_works_dir(_project_root)
+        if new_works_dir != old_path:
+            workspace.works_dir = new_works_dir
+            workspace.works_dir.mkdir(parents=True, exist_ok=True)
+            launcher.refresh_after_edit()
 
     launcher.open_work_requested.connect(open_editor)
     launcher.settings_requested.connect(open_settings)

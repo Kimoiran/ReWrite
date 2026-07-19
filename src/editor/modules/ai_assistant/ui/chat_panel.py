@@ -32,12 +32,6 @@ class MessageBubble(QFrame):
         self.browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.browser.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
-        # 根据内容计算高度（用 480 作为默认宽度，避免布局未完成时的窄 fallback）
-        doc = self.browser.document()
-        doc.setTextWidth(480)
-        content_height = int(doc.size().height()) + 16
-        self.browser.setMinimumHeight(max(40, min(content_height, 800)))
-        QTimer.singleShot(50, lambda: self._resize_to_content())
         bg = "#E3F2FD" if role == "user" else "#F5F7FA"
         self.browser.setStyleSheet(f"""
             QTextBrowser {{
@@ -52,17 +46,22 @@ class MessageBubble(QFrame):
         """)
         layout.addWidget(self.browser)
 
+        # 延迟一次 resize，等布局稳定
+        QTimer.singleShot(30, self._resize_to_content)
+
     def set_content(self, html: str):
         self.browser.setHtml(html)
+        QTimer.singleShot(10, self._resize_to_content)
 
     def _resize_to_content(self):
-        """等布局稳定后根据实际宽度重新计算高度。"""
+        """根据实际宽度重新计算气泡高度。"""
         w = self.browser.viewport().width()
-        if w > 100:
-            doc = self.browser.document()
-            doc.setTextWidth(w)
-            h = int(doc.size().height()) + 16
-            self.browser.setMinimumHeight(max(40, min(h, 800)))
+        if w < 50:
+            w = 480
+        doc = self.browser.document()
+        doc.setTextWidth(w)
+        h = int(doc.size().height()) + 16
+        self.browser.setMinimumHeight(max(40, h))
 
 
 class LoadingBubble(QFrame):
@@ -95,7 +94,7 @@ class LoadingBubble(QFrame):
         # 推理过程显示区（可滚动，默认隐藏）
         self.reasoning_scroll = QScrollArea()
         self.reasoning_scroll.setWidgetResizable(True)
-        self.reasoning_scroll.setMaximumHeight(160)
+        self.reasoning_scroll.setMaximumHeight(400)
         self.reasoning_scroll.setVisible(False)
         self.reasoning_scroll.setStyleSheet("""
             QScrollArea {

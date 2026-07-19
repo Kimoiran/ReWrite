@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QRect, QSize, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QIcon, QCursor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QLayout, QSizePolicy, QMessageBox,
@@ -11,12 +11,11 @@ from PySide6.QtWidgets import (
 )
 
 from ..storage.meta import WorkMeta, type_to_name
-from ..storage.work_io import create_work, delete_work, work_exists
+from ..storage.work_io import create_work, delete_work, set_work_cloud_enabled, work_exists
 from ..storage.git_manager import GitManager
 from ..storage.workspace import Workspace
 from ..utils.stats import format_word_count
 from ..ui.titlebar import TitleBar, make_frameless
-from PySide6.QtGui import QIcon
 from .work_card import WorkCard
 from .create_dialog import CreateWorkDialog
 
@@ -37,6 +36,7 @@ class FlowLayout(QLayout):
 
     def addItem(self, item):
         self._item_list.append(item)
+        self.invalidate()
 
     def count(self):
         return len(self._item_list)
@@ -65,24 +65,30 @@ class FlowLayout(QLayout):
         self._do_layout(rect, False)
 
     def sizeHint(self):
-        return QSize(self.parentWidget().width(),
-                     self._do_layout(QRect(0, 0, self.parentWidget().width(), 0), True))
+        w = self.parentWidget().width() if self.parentWidget() else 200
+        if w < 50:
+            w = 200
+        return QSize(w, self._do_layout(QRect(0, 0, w, 0), True))
 
     def _do_layout(self, rect, test_only):
-        x = rect.x()
-        y = rect.y()
+        left_margin = self.contentsMargins().left()
+        top_margin = self.contentsMargins().top()
+        x = rect.x() + left_margin
+        y = rect.y() + top_margin
         line_height = 0
         spacing = self.spacing()
-        margin = self.contentsMargins().left()
+        available_width = max(rect.width() - left_margin - self.contentsMargins().right(), 200)
 
         for item in self._item_list:
             widget = item.widget()
-            if widget is None or not widget.isVisible():
+            if widget is None:
                 continue
+            # 注意：不检查 isVisible()，因为初始加载时窗口未显示，
+            # 所有 widget 都是不可见的，检查会导致布局计算出错
             widget_size = widget.sizeHint()
             next_x = x + widget_size.width() + spacing
-            if next_x - spacing > rect.right() and x > margin:
-                x = rect.x()
+            if next_x - spacing > rect.x() + left_margin + available_width and x > rect.x() + left_margin:
+                x = rect.x() + left_margin
                 y += line_height + spacing
                 line_height = 0
             if not test_only:
@@ -98,12 +104,22 @@ class LauncherWindow(QWidget):
     open_work_requested = Signal(str)
     settings_requested = Signal()
 
+    PAGE_SIZE = 12  # 每页显示卡片数
+
     def __init__(self, workspace: Workspace):
         super().__init__()
         self.workspace = workspace
         self._cards = []
+        self._current_page = 0
         self._setup_ui()
         self._refresh()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if getattr(self, '_need_icon_fix', False):
+            from ..ui.titlebar import _fix_taskbar_icon
+            _fix_taskbar_icon(self)
+            self._need_icon_fix = False
 
     def _setup_ui(self):
         self.setWindowTitle("ReWrite")
@@ -113,10 +129,12 @@ class LauncherWindow(QWidget):
         # 无边框标志必须在任何 widget 之前
         make_frameless(self)
 
-        # 设置窗口图标（无边框后会丢失 app 级图标）
-        icon_path = Path(__file__).resolve().parent.parent.parent / "assets" / "icon.png"
-        if icon_path.exists():
-            self.setWindowIcon(QIcon(str(icon_path)))
+        # 设置窗口图标（无边框后会丢失 app 级图标，Windows 需要 .ico）
+        for name in ("icon.ico", "icon.png"):
+            icon_path = Path(__file__).resolve().parent.parent.parent / "assets" / name
+            if icon_path.exists():
+                self.setWindowIcon(QIcon(str(icon_path)))
+                break
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -171,16 +189,38 @@ class LauncherWindow(QWidget):
         content_layout.addLayout(toolbar)
 
         # ── 卡片网格 ──
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QLabel.Shape.NoFrame)
-        scroll_area.setStyleSheet("QScrollArea { background-color: transparent; border: none; }")
-        scroll_content = QWidget()
-        scroll_content.setStyleSheet("background-color: transparent;")
-        self.flow_layout = FlowLayout(scroll_content, margin=0, spacing=16)
-        scroll_content.setLayout(self.flow_layout)
-        scroll_area.setWidget(scroll_content)
-        content_layout.addWidget(scroll_area, stretch=1)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QLabel.Shape.NoFrame)
+        self.scroll_area.setStyleSheet("QScrollArea { background-color: transparent; border: none; }")
+        self.scroll_content = QWidget()
+        self.scroll_content.setStyleSheet("background-color: transparent;")
+        self.flow_layout = FlowLayout(self.scroll_content, margin=4, spacing=24)
+        self.scroll_content.setLayout(self.flow_layout)
+        self.scroll_area.setWidget(self.scroll_content)
+        content_layout.addWidget(self.scroll_area, stretch=1)
+
+        # ── 分页控件 ──
+        self.page_widget = QWidget()
+        page_layout = QHBoxLayout(self.page_widget)
+        page_layout.setContentsMargins(0, 8, 0, 0)
+        page_layout.addStretch()
+        self.prev_btn = QPushButton("‹ 上一页")
+        self.prev_btn.setStyleSheet(btn_style)
+        self.prev_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.prev_btn.clicked.connect(self._prev_page)
+        page_layout.addWidget(self.prev_btn)
+        self.page_label = QLabel("第 1/1 页")
+        self.page_label.setStyleSheet("color: #5a6a7a; font-size: 12px; padding: 4px 12px;")
+        page_layout.addWidget(self.page_label)
+        self.next_btn = QPushButton("下一页 ›")
+        self.next_btn.setStyleSheet(btn_style)
+        self.next_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.next_btn.clicked.connect(self._next_page)
+        page_layout.addWidget(self.next_btn)
+        page_layout.addStretch()
+        self.page_widget.setVisible(False)
+        content_layout.addWidget(self.page_widget)
 
         # ── 状态栏 ──
         self.status_label = QLabel("")
@@ -211,8 +251,11 @@ class LauncherWindow(QWidget):
         self.title_bar.maximize_requested.connect(toggle_max)
 
     def _refresh(self):
-        for card in self._cards:
-            card.deleteLater()
+        # 清除旧卡片（从 layout 中正确移除并销毁）
+        while self.flow_layout.count():
+            item = self.flow_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         self._cards.clear()
 
         works = self.workspace.scan()
@@ -221,16 +264,34 @@ class LauncherWindow(QWidget):
         self._git = GitManager(self.workspace.works_dir)
         self._refresh_git_status()
 
-        if works:
-            total = len(works)
+        total_works = len(works)
+        if total_works:
             total_words = sum(w.total_words for w in works)
-            self.status_label.setText(f"共 {total} 个作品，{format_word_count(total_words)} 字")
+            self.status_label.setText(f"共 {total_works} 个作品，{format_word_count(total_words)} 字")
             self.empty_label.setVisible(False)
         else:
             self.status_label.setText("")
             self.empty_label.setVisible(True)
+            self.page_widget.setVisible(False)
 
-        for meta in works:
+        # ── 分页 ──
+        total_pages = max(1, (total_works + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        # 修正当前页码（删除作品后可能越界）
+        if self._current_page >= total_pages:
+            self._current_page = total_pages - 1
+        start = self._current_page * self.PAGE_SIZE
+        page_works = works[start:start + self.PAGE_SIZE]
+
+        # 更新分页控件
+        if total_works > self.PAGE_SIZE:
+            self.page_widget.setVisible(True)
+            self.page_label.setText(f"第 {self._current_page + 1}/{total_pages} 页")
+            self.prev_btn.setEnabled(self._current_page > 0)
+            self.next_btn.setEnabled(self._current_page < total_pages - 1)
+        else:
+            self.page_widget.setVisible(False)
+
+        for meta in page_works:
             work_path = self.workspace.get_work_path(meta)
             dir_name = work_path.name if work_path.exists() else ""
             if not dir_name:
@@ -238,8 +299,12 @@ class LauncherWindow(QWidget):
             card = WorkCard(meta, dir_name)
             card.clicked.connect(self._on_card_clicked)
             card.delete_requested.connect(self._on_card_delete_requested)
+            card.cloud_toggled.connect(self._on_cloud_toggled)
             self.flow_layout.addWidget(card)
             self._cards.append(card)
+
+        # 触发布局更新
+        self.scroll_content.updateGeometry()
 
     def _on_new_work(self):
         dialog = CreateWorkDialog(self.workspace.works_dir, self)
@@ -247,20 +312,16 @@ class LauncherWindow(QWidget):
             data = dialog.get_result()
             if not data:
                 return
-            if work_exists(self.workspace.works_dir, data["title"]):
-                QMessageBox.warning(self, "提示", f"已存在同名作品「{data['title']}」")
-                return
             result = create_work(
                 works_dir=self.workspace.works_dir,
                 title=data["title"],
                 work_type=data["work_type"],
                 modules=data["modules"],
-                git_enabled=data["git_enabled"],
-                git_remote=data["git_remote"],
-                git_auto_push=data["git_auto_push"],
+                cloud_enabled=data["cloud_enabled"],
                 date_era=data.get("date_era", ""),
             )
             if result:
+                self._current_page = 0  # 新建后跳到首页
                 self._refresh()
             else:
                 QMessageBox.critical(self, "错误", "创建作品失败，请检查磁盘空间和权限")
@@ -280,7 +341,14 @@ class LauncherWindow(QWidget):
         if reply == QMessageBox.StandardButton.Yes:
             work_path = self.workspace.works_dir / dir_name
             if delete_work(work_path):
+                self._current_page = 0
                 self._refresh()
+
+    def _on_cloud_toggled(self, dir_name: str, enabled: bool):
+        """切换作品的云端同步状态。"""
+        work_path = self.workspace.works_dir / dir_name
+        if set_work_cloud_enabled(work_path, enabled):
+            self._refresh()
 
     def _on_import(self):
         """导入作品 — 选择 ZIP 导入或 Git 仓库克隆。"""
@@ -423,6 +491,19 @@ class LauncherWindow(QWidget):
         except Exception as e:
             shutil.rmtree(tmp, ignore_errors=True)
             QMessageBox.critical(self, "导入失败", str(e))
+
+    # ── 分页导航 ──
+
+    def _prev_page(self):
+        if self._current_page > 0:
+            self._current_page -= 1
+            self._refresh()
+
+    def _next_page(self):
+        total_pages = max(1, (len(self.workspace.scan()) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        if self._current_page < total_pages - 1:
+            self._current_page += 1
+            self._refresh()
 
     def _on_export(self):
         """导出作品为 .writepack。"""

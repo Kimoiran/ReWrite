@@ -159,10 +159,12 @@ class GitManager:
         if r.returncode != 0:
             return False, r.stderr.decode("utf-8", errors="replace").strip()
 
-        # 创建 .gitignore
-        (self.works_dir / ".gitignore").write_text(
-            ".DS_Store\nThumbs.db\n*.tmp\n*.log\n.rewrite_git.json\n", encoding="utf-8"
-        )
+        # 创建 .gitignore（仅在不存在时，避免覆盖已有条目）
+        gitignore = self.works_dir / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text(
+                ".DS_Store\nThumbs.db\n*.tmp\n*.log\n.rewrite_git.json\n", encoding="utf-8"
+            )
         return True, "初始化成功"
 
     def status(self) -> dict:
