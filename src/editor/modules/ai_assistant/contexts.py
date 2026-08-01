@@ -24,9 +24,14 @@ def collect_context(scope: list[str], current_md: str = "",
             parts.append(f"<<<章节正文 (chapters)>>>\n{current_md[:8000]}")
 
     if "selected_text" in scope and current_selection:
-        # 用户选中文本从编辑器取仍可能是 HTML，需 strip
+        # 用户选中文本从编辑器取的是 HTML:先转断行标签,再剥标签、反转义实体
         import re
-        sel = re.sub(r"<[^>]+>", "", current_selection).strip()
+        import html as _html
+        sel = current_selection
+        sel = re.sub(r"(?i)<br\s*/?>", "\n", sel)
+        sel = re.sub(r"(?i)</p>", "\n", sel)
+        sel = re.sub(r"<[^>]+>", "", sel)
+        sel = _html.unescape(sel).strip()
         if sel:
             parts.append(f"<<<用户选中的文本 (selection)>>>\n{sel[:3000]}")
 

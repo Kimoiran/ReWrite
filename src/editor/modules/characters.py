@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QAction
 
 from .base_module import BaseModule
+from ...ui.theme import Color
 
 
 @dataclass
@@ -334,7 +335,9 @@ class CharacterDock(QDockWidget):
         btn_row.addWidget(delete_btn)
 
         import_btn = QPushButton("📥 批量导入")
-        import_btn.setStyleSheet("font-size: 10px; padding: 4px 8px; border: 1px solid #4CAF50; color: #2E7D32;")
+        import_btn.setStyleSheet(
+            f"font-size: 10px; padding: 4px 8px; border: 1px solid {Color.SUCCESS};"
+            f" color: {Color.SUCCESS_TEXT}; border-radius: 4px;")
         import_btn.clicked.connect(self._on_batch_import)
         btn_row.addWidget(import_btn)
 
@@ -363,7 +366,8 @@ class CharacterDock(QDockWidget):
         detail_layout.setContentsMargins(0, 0, 0, 0)
 
         self.detail_title = QLabel("选中角色查看详情")
-        self.detail_title.setStyleSheet("font-size: 12px; font-weight: bold; color: #1a2332;")
+        self.detail_title.setStyleSheet(
+            f"font-size: 12px; font-weight: bold; color: {Color.TEXT};")
         detail_layout.addWidget(self.detail_title)
 
         form = QFormLayout()

@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QStatusBar, QLabel, QPushButton, QMenu,
 )
 from PySide6.QtGui import QAction
+from ..ui.theme import Color
 
 
 class EditorStatusBar(QStatusBar):
@@ -32,30 +33,30 @@ class EditorStatusBar(QStatusBar):
 
         # 保存状态
         self.save_label = QLabel("已保存")
-        self.save_label.setStyleSheet("color: #4caf50;")
+        self.save_label.setStyleSheet(f"color: {Color.SUCCESS};")
         self.addPermanentWidget(self.save_label)
 
         self.addPermanentWidget(QLabel("  │  "))
 
         # 手动推送按钮
         self.push_btn = QPushButton("☁  提交并推送")
-        self.push_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
+        self.push_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Color.PRIMARY};
+                color: {Color.TEXT_INVERSE};
                 border: none;
                 border-radius: 4px;
                 padding: 4px 12px;
                 font-size: 11px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
-            QPushButton:disabled {
-                background-color: #e0e0e0;
-                color: #999;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {Color.PRIMARY_DARK};
+            }}
+            QPushButton:disabled {{
+                background-color: {Color.BORDER};
+                color: {Color.TEXT_HINT};
+            }}
         """)
         self.push_btn.setVisible(False)
         self.push_btn.clicked.connect(self._on_push_clicked)
@@ -67,12 +68,12 @@ class EditorStatusBar(QStatusBar):
         self.git_btn = QPushButton("Git: --")
         self.git_btn.setFlat(True)
         self.git_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.git_btn.setStyleSheet("""
-            QPushButton {
-                color: #999999; border: none; font-size: 11px;
+        self.git_btn.setStyleSheet(f"""
+            QPushButton {{
+                color: {Color.TEXT_HINT}; border: none; font-size: 11px;
                 padding: 0 4px; text-align: left;
-            }
-            QPushButton:hover { color: #333333; }
+            }}
+            QPushButton:hover {{ color: {Color.TEXT}; }}
         """)
         self.git_btn.clicked.connect(self._on_git_click)
         self.addPermanentWidget(self.git_btn)
@@ -90,15 +91,15 @@ class EditorStatusBar(QStatusBar):
 
     def show_saving(self):
         self.save_label.setText("保存中...")
-        self.save_label.setStyleSheet("color: #ff9800;")
+        self.save_label.setStyleSheet(f"color: {Color.WARNING};")
 
     def show_saved(self):
         self.save_label.setText(f"已保存 {datetime.now():%H:%M:%S}")
-        self.save_label.setStyleSheet("color: #4caf50;")
+        self.save_label.setStyleSheet(f"color: {Color.SUCCESS};")
 
     def show_unsaved(self):
         self.save_label.setText("未保存")
-        self.save_label.setStyleSheet("color: #f44336;")
+        self.save_label.setStyleSheet(f"color: {Color.ERROR};")
 
     def _on_save_timeout(self):
         self.show_saved()
@@ -115,25 +116,25 @@ class EditorStatusBar(QStatusBar):
         if not status.get("has_remote") and not status.get("dirty") and not status.get("commit_count"):
             self.git_btn.setText("Git: -")
             self.git_btn.setStyleSheet(
-                "QPushButton { color: #999999; border: none; font-size: 11px; padding: 0 4px; }"
+                f"QPushButton {{ color: {Color.TEXT_HINT}; border: none; font-size: 11px; padding: 0 4px; }}"
             )
             return
 
         parts = []
-        style = "color: #999999;"
+        style = f"color: {Color.TEXT_HINT};"
 
         if status["ahead"] > 0:
             parts.append(f"↑{status['ahead']}")
-            style = "color: #1a73e8;"
+            style = f"color: {Color.PRIMARY};"
         if status["behind"] > 0:
             parts.append(f"↓{status['behind']}")
-            style = "color: #e37400;"
+            style = f"color: {Color.WARNING};"
         if status["unstaged"] > 0:
             parts.append(f"~{status['unstaged']}")
-            style = "color: #e37400;"
+            style = f"color: {Color.WARNING};"
         if status["staged"] > 0:
             parts.append(f"+{status['staged']}")
-            style = "color: #4caf50;"
+            style = f"color: {Color.SUCCESS};"
         if not status["has_remote"] and status["commit_count"] > 0:
             parts.append("(仅本地)")
 
@@ -141,7 +142,7 @@ class EditorStatusBar(QStatusBar):
         self.git_btn.setText(text)
         self.git_btn.setStyleSheet(
             f"QPushButton {{ color: {style.split(':')[1].strip()}; border: none; font-size: 11px; padding: 0 4px; text-align: left; }}"
-            "QPushButton:hover { color: #333333; }"
+            f"QPushButton:hover {{ color: {Color.TEXT}; }}"
         )
 
     def _on_git_click(self):

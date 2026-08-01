@@ -10,6 +10,9 @@ from PySide6.QtWidgets import (
 from .general_settings import GeneralSettingsPage
 from .ai_settings import AISettingsPage
 from .git_settings import GitSettingsPage
+from .appearance_settings import AppearanceSettingsPage
+
+from ..ui.theme import Color
 
 
 class SettingsWindow(QDialog):
@@ -31,25 +34,26 @@ class SettingsWindow(QDialog):
         # ── 左侧导航 ──
         nav_widget = QWidget()
         nav_widget.setFixedWidth(150)
-        nav_widget.setStyleSheet("background-color: #ffffff; border-right: 1px solid #e0e0e0;")
+        nav_widget.setStyleSheet(
+            f"background-color: {Color.SURFACE}; border-right: 1px solid {Color.BORDER};")
         nav_layout = QVBoxLayout(nav_widget)
         nav_layout.setContentsMargins(0, 8, 0, 8)
         nav_layout.setSpacing(0)
 
         self.nav_list = QListWidget()
-        self.nav_list.setStyleSheet("""
-            QListWidget {
+        self.nav_list.setStyleSheet(f"""
+            QListWidget {{
                 border: none; background-color: transparent; font-size: 13px;
-            }
-            QListWidget::item {
-                padding: 10px 16px; border: none; color: #333333;
-            }
-            QListWidget::item:selected {
-                background-color: #e8f0fe; color: #1a73e8; font-weight: bold;
-            }
-            QListWidget::item:hover {
-                background-color: #f5f5f5;
-            }
+            }}
+            QListWidget::item {{
+                padding: 10px 16px; border: none; color: {Color.TEXT};
+            }}
+            QListWidget::item:selected {{
+                background-color: {Color.PRIMARY_LIGHT}; color: {Color.PRIMARY_DARK}; font-weight: bold;
+            }}
+            QListWidget::item:hover {{
+                background-color: {Color.BG_ALT};
+            }}
         """)
         self.nav_list.currentRowChanged.connect(self._on_nav_changed)
         nav_layout.addWidget(self.nav_list)
@@ -60,15 +64,17 @@ class SettingsWindow(QDialog):
 
         # ── 右侧页面 ──
         self.stacked = QStackedWidget()
-        self.stacked.setStyleSheet("background-color: #ffffff;")
+        self.stacked.setStyleSheet(f"background-color: {Color.SURFACE};")
 
         self.general_page = GeneralSettingsPage()
         self.ai_page = AISettingsPage()
         self.git_page = GitSettingsPage()
+        self.appearance_page = AppearanceSettingsPage()
 
         self.stacked.addWidget(self.general_page)
         self.stacked.addWidget(self.ai_page)
         self.stacked.addWidget(self.git_page)
+        self.stacked.addWidget(self.appearance_page)
 
         layout.addWidget(self.stacked, stretch=1)
 
@@ -77,6 +83,7 @@ class SettingsWindow(QDialog):
             ("通用", "一般设置"),
             ("AI 助手", "API 和模型配置"),
             ("Git 版本管理", "GitHub Token 与工作空间配置"),
+            ("外观", "主题与界面风格"),
         ]
         for name, desc in items:
             item = QListWidgetItem(f"  {name}")

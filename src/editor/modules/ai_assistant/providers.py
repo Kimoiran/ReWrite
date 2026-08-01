@@ -22,7 +22,7 @@ def _describe_tool(tool_name: str, args: dict, result: dict) -> str:
 
 def _execute_tool(tool_name: str, args: dict) -> str:
     """执行 Skill 并返回描述文本。"""
-    if tool_name != "list_works" and "work" not in args:
+    if tool_name != "list_works":
         import os as _os
         current = _os.environ.get("REWRITE_CURRENT_WORK", "")
         if current:
@@ -197,9 +197,12 @@ class OpenAIProvider(AIProvider):
         for tc in tool_calls:
             name = tc["function"]["name"]
             try:
-                args = json.loads(tc["function"]["arguments"])
-            except json.JSONDecodeError:
+                raw_args = tc["function"].get("arguments")
+                args = json.loads(raw_args) if raw_args else {}
+            except (json.JSONDecodeError, TypeError):
                 args = {}
+            if not isinstance(args, dict):
+                args = {}  # 合法 JSON 但非对象(如 "null"/"[]")也安全降级
             r = _execute_tool(name, args)
             full.append({"role": "tool", "tool_call_id": tc["id"], "content": r})
             executed.append(f"{name}({args.get('name','') or args.get('title','')})")
@@ -260,15 +263,26 @@ def _extract_reasoning(data: dict) -> str:
     return ""
 
 
+class _StreamReadError(Exception):
+    """流读取阶段异常 — 不重试(可能已向 UI 推送部分内容)。"""
+
+    def __init__(self, cause):
+        super().__init__(str(cause))
+        self.cause = cause
+
+
 def _make_streaming_request(agent, messages: list, system_prompt: str = "",
-                             on_reasoning=None, on_content=None, tools: list = None):
+                             on_reasoning=None, on_content=None, tools: list = None,
+                             retries: int = 2):
     """流式请求，边接收边回调。返回 (full_text, tool_calls, reasoning)。
 
     - on_reasoning(chunk): 收到推理内容时回调
     - on_content(chunk): 收到正文内容时回调
     - tools: 可选工具定义，传入后启用 function calling
+    - retries: 连接失败/HTTP 5xx/429 时的重试次数。
+      仅建连阶段重试；流读取中途失败不重试(可能已回调过部分内容)。
     """
-    import urllib.request, urllib.error, json as _json
+    import urllib.request, urllib.error, json as _json, time as _time
     config = agent.config
     api_key = config.get("api_key", "")
     model = config.get("model", "deepseek-v4-flash")
@@ -284,86 +298,115 @@ def _make_streaming_request(agent, messages: list, system_prompt: str = "",
     if tools:
         payload["tools"] = tools
     body = _json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=body,
-        headers={"Authorization": f"Bearer {api_key}",
-                 "content-type": "application/json"})
 
-    result_parts = []
-    reasoning_parts = []
-    # 流式 tool_calls 累积：index → {id, function.name, function.arguments}
-    tool_calls_map = {}
+    def _stream_once() -> tuple:
+        """建立连接并读完整条 SSE 流。返回 (full_text, tool_calls, reasoning)。"""
+        req = urllib.request.Request(url, data=body,
+            headers={"Authorization": f"Bearer {api_key}",
+                     "content-type": "application/json"})
 
-    with urllib.request.urlopen(req, timeout=180) as resp:
-        raw_buffer = b""
-        done = False
-        while not done:
-            raw_chunk = resp.read(4096)
-            if not raw_chunk:
-                break
-            raw_buffer += raw_chunk
-            # 统一换行符：\r\n → \n
-            raw_buffer = raw_buffer.replace(b"\r\n", b"\n")
-            # SSE 帧由 \n\n 分隔，确保在帧边界解码 UTF-8（避免拆散多字节中文）
-            while b"\n\n" in raw_buffer:
-                frame, raw_buffer = raw_buffer.split(b"\n\n", 1)
-                text = frame.decode("utf-8", errors="replace")
-                for line in text.strip().split("\n"):
-                    if line.startswith("data: "):
-                        data_str = line[6:]
-                        if data_str.strip() == "[DONE]":
-                            done = True
+        result_parts = []
+        reasoning_parts = []
+        # 流式 tool_calls 累积：index → {id, function.name, function.arguments}
+        tool_calls_map = {}
+
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            raw_buffer = b""
+            done = False
+            try:
+                while not done:
+                    raw_chunk = resp.read(4096)
+                    if not raw_chunk:
+                        break
+                    raw_buffer += raw_chunk
+                    # 统一换行符：\r\n → \n
+                    raw_buffer = raw_buffer.replace(b"\r\n", b"\n")
+                    # SSE 帧由 \n\n 分隔，确保在帧边界解码 UTF-8（避免拆散多字节中文）
+                    while b"\n\n" in raw_buffer:
+                        frame, raw_buffer = raw_buffer.split(b"\n\n", 1)
+                        text = frame.decode("utf-8", errors="replace")
+                        for line in text.strip().split("\n"):
+                            if line.startswith("data: "):
+                                data_str = line[6:]
+                                if data_str.strip() == "[DONE]":
+                                    done = True
+                                    break
+                                try:
+                                    data = _json.loads(data_str)
+                                    delta = data.get("choices", [{}])[0].get("delta", {})
+
+                                    if "reasoning_content" in delta and delta["reasoning_content"]:
+                                        reasoning_parts.append(delta["reasoning_content"])
+                                        if on_reasoning:
+                                            on_reasoning(delta["reasoning_content"])
+
+                                    if "content" in delta and delta["content"]:
+                                        result_parts.append(delta["content"])
+                                        if on_content:
+                                            on_content(delta["content"])
+
+                                    # 累积流式 tool_calls（按 index 合并）
+                                    if "tool_calls" in delta:
+                                        for tc in delta["tool_calls"]:
+                                            idx = tc.get("index", 0)
+                                            if idx not in tool_calls_map:
+                                                tool_calls_map[idx] = {
+                                                    "id": "", "type": "function",
+                                                    "function": {"name": "", "arguments": ""}
+                                                }
+                                            entry = tool_calls_map[idx]
+                                            if "id" in tc and tc["id"]:
+                                                entry["id"] = tc["id"]
+                                            if "function" in tc:
+                                                f = tc["function"]
+                                                if "name" in f and f["name"]:
+                                                    entry["function"]["name"] = f["name"]
+                                                if f.get("arguments"):
+                                                    entry["function"]["arguments"] += f["arguments"]
+                                except _json.JSONDecodeError:
+                                    pass
+                        if done:
                             break
-                        try:
-                            data = _json.loads(data_str)
-                            delta = data.get("choices", [{}])[0].get("delta", {})
+            except (urllib.error.HTTPError, OSError, TimeoutError) as e:
+                # 读取中途失败:不再重试,避免已推送的流式内容重复
+                raise _StreamReadError(e) from e
 
-                            if "reasoning_content" in delta and delta["reasoning_content"]:
-                                reasoning_parts.append(delta["reasoning_content"])
-                                if on_reasoning:
-                                    on_reasoning(delta["reasoning_content"])
+        full_text = "".join(result_parts)
+        reasoning = "".join(reasoning_parts)
+        tool_calls = list(tool_calls_map.values()) if tool_calls_map else []
+        return full_text, tool_calls, reasoning
 
-                            if "content" in delta and delta["content"]:
-                                result_parts.append(delta["content"])
-                                if on_content:
-                                    on_content(delta["content"])
-
-                            # 累积流式 tool_calls（按 index 合并）
-                            if "tool_calls" in delta:
-                                for tc in delta["tool_calls"]:
-                                    idx = tc.get("index", 0)
-                                    if idx not in tool_calls_map:
-                                        tool_calls_map[idx] = {
-                                            "id": "", "type": "function",
-                                            "function": {"name": "", "arguments": ""}
-                                        }
-                                    entry = tool_calls_map[idx]
-                                    if "id" in tc and tc["id"]:
-                                        entry["id"] = tc["id"]
-                                    if "function" in tc:
-                                        f = tc["function"]
-                                        if "name" in f and f["name"]:
-                                            entry["function"]["name"] = f["name"]
-                                        if "arguments" in f:
-                                            entry["function"]["arguments"] += f["arguments"]
-                        except _json.JSONDecodeError:
-                            pass
-                if done:
-                    break
-
-    full_text = "".join(result_parts)
-    reasoning = "".join(reasoning_parts)
-    tool_calls = list(tool_calls_map.values()) if tool_calls_map else []
-
-    if tool_calls:
-        import logging
-        logger = logging.getLogger("rewrite.ai")
-        logger.info(f"流式请求收集到 {len(tool_calls)} 个工具调用: "
-                    f"{[(tc['function']['name'], tc['function']['arguments'][:200]) for tc in tool_calls]}")
-
-    return full_text, tool_calls, reasoning
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            full_text, tool_calls, reasoning = _stream_once()
+            if tool_calls:
+                import logging
+                logger = logging.getLogger("rewrite.ai")
+                logger.info(f"流式请求收集到 {len(tool_calls)} 个工具调用: "
+                            f"{[(tc['function']['name'], tc['function']['arguments'][:200]) for tc in tool_calls]}")
+            return full_text, tool_calls, reasoning
+        except _StreamReadError:
+            raise  # 读取阶段失败:已推送过部分内容,不重试
+        except urllib.error.HTTPError as e:
+            # 仅对可重试状态码重试;4xx 其余直接抛
+            if e.code in (429, 500, 502, 503, 504) and attempt < retries:
+                last_err = f"HTTP {e.code}"
+                _time.sleep(1.5 * (attempt + 1))
+                continue
+            raise
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            if attempt < retries:
+                last_err = str(e)
+                _time.sleep(1.5 * (attempt + 1))
+                continue
+            raise
+    raise last_err if isinstance(last_err, Exception) else RuntimeError("请求失败")
 
 
-_FAKE_PATTERN = ["✅ ", "已修改", "已创建", "已删除", "已更新", "已完成", "已恢复", "操作完成"]
+_FAKE_PATTERN = ["✅ ", "已修改", "已经修改", "已创建", "已经创建", "已删除", "已经删除",
+                 "已更新", "已经更新", "已完成", "已经完成", "已恢复", "已经恢复",
+                 "操作完成", "改好了", "创建好了", "删除完成"]
 
 
 def _check_fake_completion(content: str) -> str:
@@ -377,17 +420,34 @@ def _check_fake_completion(content: str) -> str:
 
 
 def _ensure_work_args(tool_name: str, args: dict):
-    """为工具调用注入 work 参数。"""
-    if tool_name != "list_works" and "work" not in args:
-        import os as _os
-        current = _os.environ.get("REWRITE_CURRENT_WORK", "")
-        if current:
-            args["work"] = current
+    """为工具调用注入 work 参数。
+
+    安全:强制覆写为当前作品,不信任 AI 提供的 work(防路径穿越)。
+    """
+    if tool_name == "list_works":
+        return
+    import os as _os
+    current = _os.environ.get("REWRITE_CURRENT_WORK", "")
+    if current:
+        args["work"] = current
+    else:
+        from .skills._shared import list_works as _lw
+        works = _lw()
+        if works:
+            args["work"] = works[0]["name"]
         else:
-            from .skills._shared import list_works as _lw
-            works = _lw()
-            if works:
-                args["work"] = works[0]["name"]
+            args.pop("work", None)
+
+
+def _rollback_user_message(agent, message: str):
+    """API 失败时回滚刚追加的 user 消息,避免历史出现"挂起"问题。"""
+    h = agent.history
+    if h and h[-1].get("role") == "user" and h[-1].get("content") == message:
+        h.pop()
+        try:
+            agent._persist()
+        except Exception:
+            pass
 
 
 def get_proposals_only(agent, message: str, context: str = ""):
@@ -432,8 +492,10 @@ def get_proposals_only(agent, message: str, context: str = ""):
             data = _j.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         err = e.read().decode("utf-8", errors="replace")
+        _rollback_user_message(agent, message)
         return f"[错误] HTTP {e.code}: {err[:200]}"
     except Exception as e:
+        _rollback_user_message(agent, message)
         return f"[错误] {e}"
 
     choice = data.get("choices", [{}])[0]

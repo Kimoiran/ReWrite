@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QMenu, QGraphicsSimpleTextItem,
 )
 from .base_module import BaseModule
+from ...ui.theme import Color
 
 
 @dataclass
@@ -75,8 +76,8 @@ class BoundaryVertex(QGraphicsEllipseItem):
         self._last_pos = None
         self.setPos(x, y)
         self.setVisible(r > 0)
-        self.setBrush(QBrush(QColor("#ffffff")))
-        self.setPen(QPen(QColor("#333"), 1.5))
+        self.setBrush(QBrush(QColor(Color.SURFACE)))
+        self.setPen(QPen(QColor(Color.TEXT), 1.5))
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
@@ -238,7 +239,7 @@ class MapNodeItem(QGraphicsEllipseItem):
         f = QFont(); f.setPointSize(int(fs)); f.setItalic(italic)
         self._label.setFont(f)
         self._label.setPos(r + 4, -max(r / 2, 4))
-        self._label.setBrush(QBrush(QColor("#1a1a1a")))
+        self._label.setBrush(QBrush(QColor(Color.TEXT)))
         self._label.setText(self.node_data.get("name", ""))
 
     def itemChange(self, change, value):
@@ -634,8 +635,9 @@ class MapDock(QDockWidget):
         w = QWidget(); lo = QVBoxLayout(w)
         lo.setContentsMargins(4, 4, 4, 4); lo.setSpacing(4)
         tb = QHBoxLayout()
-        btn_base = "font-size:11px;padding:4px 8px;border:1px solid #d0d7de;border-radius:4px;background:#fff;color:#333;"
-        btn_hover = "QPushButton:hover{background:#e8eaed;}"
+        btn_base = (f"font-size:11px;padding:4px 8px;border:1px solid {Color.BORDER};"
+                     f"border-radius:4px;background:{Color.SURFACE};color:{Color.TEXT};")
+        btn_hover = f"QPushButton:hover{{background:{Color.BG_ALT};}}"
         bl = lambda t: f"QPushButton{{{btn_base}}}{btn_hover}" if "QPushButton" not in t else t
 
         for t, fn, tip in [("放大", lambda: self._zoom_view(1.25), "滚轮缩放 / 按钮放大"),
@@ -648,19 +650,25 @@ class MapDock(QDockWidget):
         self.draw_btn.setFixedHeight(26); self.draw_btn.setCheckable(True)
         self.draw_btn.setToolTip("绘制多边形边界：左键加点 / 点击起点封闭")
         self.draw_btn.clicked.connect(self._toggle_boundary)
-        self.draw_btn.setStyleSheet("QPushButton{" + btn_base + "}QPushButton:checked{background:#e3f2fd;color:#1565c0;border-color:#1565c0;}")
+        self.draw_btn.setStyleSheet("QPushButton{" + btn_base + "}QPushButton:checked{"
+                                   f"background:{Color.PRIMARY_LIGHT};color:{Color.PRIMARY_DARK};"
+                                   f"border-color:{Color.PRIMARY_DARK};}}")
         tb.addWidget(self.draw_btn)
         self.route_btn = QPushButton("⌇ 路线")
         self.route_btn.setFixedHeight(26); self.route_btn.setCheckable(True)
         self.route_btn.setToolTip("绘制路线：左键加点(吸附节点) / 右键完成")
         self.route_btn.clicked.connect(self._toggle_route)
-        self.route_btn.setStyleSheet("QPushButton{" + btn_base + "}QPushButton:checked{background:#fce4ec;color:#c62828;border-color:#c62828;}")
+        self.route_btn.setStyleSheet("QPushButton{" + btn_base + "}QPushButton:checked{"
+                                     f"background:{Color.WARNING_BG};color:{Color.WARNING_TEXT};"
+                                     f"border-color:{Color.WARNING_TEXT};}}")
         tb.addWidget(self.route_btn)
         tb.addStretch()
         b = QPushButton("+ 节点"); b.setFixedHeight(26)
         b.setToolTip("添加地图节点（国家/地区/城市等）")
         b.clicked.connect(self._on_add_node); tb.addWidget(b)
-        b.setStyleSheet("QPushButton{font-size:11px;padding:4px 10px;background:#4a90d9;color:#fff;border:none;border-radius:4px;}QPushButton:hover{background:#3a7bc8;}")
+        b.setStyleSheet("QPushButton{"
+                        f"font-size:11px;padding:4px 10px;background:{Color.PRIMARY};color:{Color.TEXT_INVERSE};"
+                        f"border:none;border-radius:4px;}}QPushButton:hover{{background:{Color.PRIMARY_DARK};}}")
         lo.addLayout(tb)
 
         self.scene = MapScene(self)
@@ -670,10 +678,10 @@ class MapDock(QDockWidget):
         self.view._route_ctx = self._on_route_ctx
         self.view._boundary_done = self._on_boundary_done
         self.view._route_done = self._on_route_done
-        self.view.setStyleSheet("border:1px solid #e0e8f0; border-radius:4px;")
+        self.view.setStyleSheet(f"border:1px solid {Color.BORDER}; border-radius:4px;")
         lo.addWidget(self.view, 1)
         self.status = QLabel("")
-        self.status.setStyleSheet("font-size:10px; color:#888; padding:0 4px;")
+        self.status.setStyleSheet(f"font-size:10px; color:{Color.TEXT_HINT}; padding:0 4px;")
         lo.addWidget(self.status); self.setWidget(w)
 
     def _build_map(self):
@@ -688,7 +696,7 @@ class MapDock(QDockWidget):
                 p = next((x for x in self.module.nodes if x.id == n.parent_id), None)
                 if p:
                     line = QGraphicsLineItem(QLineF(p.x, p.y, n.x, n.y))
-                    line.setPen(QPen(QColor("#ccc"), 1, Qt.PenStyle.DashLine))
+                    line.setPen(QPen(QColor(Color.BORDER), 1, Qt.PenStyle.DashLine))
                     line.setZValue(1); self.scene.addItem(line)
                     self._conn_lines[n.id] = line
 

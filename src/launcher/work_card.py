@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 
 from ..storage.meta import WorkMeta, type_to_name, module_to_name
 from ..utils.stats import format_word_count
+from ..ui.theme import Color
 
 
 class WorkCard(QFrame):
@@ -41,15 +42,15 @@ class WorkCard(QFrame):
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.setToolTip(self.meta.title)
 
-        self.setStyleSheet("""
-            WorkCard {
-                background-color: #ffffff;
+        self.setStyleSheet(f"""
+            WorkCard {{
+                background-color: {Color.SURFACE};
                 border-radius: 12px;
                 border: none;
-            }
-            WorkCard:hover {
-                border: 2px solid #2196F3;
-            }
+            }}
+            WorkCard:hover {{
+                border: 2px solid {Color.PRIMARY};
+            }}
         """)
 
         layout = QVBoxLayout(self)
@@ -66,9 +67,9 @@ class WorkCard(QFrame):
         # 云同步标识（卡片右上角小徽章）
         self._cloud_label = QLabel(" ☁ 云端 ", self)
         self._cloud_label.setStyleSheet(
-            "color: #ffffff; font-size: 10px; font-weight: bold;"
-            "background-color: rgba(33,150,243,0.85);"
-            "border-radius: 8px; padding: 2px 6px;"
+            f"color: {Color.TEXT_INVERSE}; font-size: 10px; font-weight: bold;"
+            f"background-color: {Color.PRIMARY};"
+            f"border-radius: 8px; padding: 2px 6px;"
         )
         self._cloud_label.adjustSize()
         self._cloud_label.move(self.CARD_WIDTH - self._cloud_label.width() - 6, 6)
@@ -78,7 +79,9 @@ class WorkCard(QFrame):
 
         # 内容区
         content = QWidget()
-        content.setStyleSheet("background-color: #ffffff; border: none; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;")
+        content.setStyleSheet(
+            f"background-color: {Color.SURFACE}; border: none;"
+            f"border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;")
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(12, 10, 12, 12)
         content_layout.setSpacing(4)
@@ -95,7 +98,7 @@ class WorkCard(QFrame):
 
         # 类型标签
         type_label = QLabel(type_to_name(self.meta.work_type))
-        type_label.setStyleSheet("font-size: 11px; color: #5a6a7a;")
+        type_label.setStyleSheet(f"font-size: 11px; color: {Color.TEXT_SECONDARY};")
         content_layout.addWidget(type_label)
 
         content_layout.addStretch()
@@ -109,7 +112,7 @@ class WorkCard(QFrame):
         words = format_word_count(self.meta.total_words)
         stats_text = f"{chap_count} 章 · {words} 字" if chap_count else f"{words} 字"
         word_label = QLabel(stats_text)
-        word_label.setStyleSheet("font-size: 11px; color: #5a6a7a;")
+        word_label.setStyleSheet(f"font-size: 11px; color: {Color.TEXT_SECONDARY};")
         info_layout.addWidget(word_label)
 
         info_layout.addStretch()
@@ -117,7 +120,7 @@ class WorkCard(QFrame):
         # 模块数
         modules_text = f"{len(self.meta.modules)} 模块"
         modules_label = QLabel(modules_text)
-        modules_label.setStyleSheet("font-size: 10px; color: #8a9aaa;")
+        modules_label.setStyleSheet(f"font-size: 10px; color: {Color.TEXT_HINT};")
         info_layout.addWidget(modules_label)
 
         content_layout.addLayout(info_layout)
@@ -129,7 +132,7 @@ class WorkCard(QFrame):
         except (ValueError, TypeError):
             date_str = ""
         date_label = QLabel(date_str)
-        date_label.setStyleSheet("font-size: 10px; color: #8a9aaa;")
+        date_label.setStyleSheet(f"font-size: 10px; color: {Color.TEXT_HINT};")
         content_layout.addWidget(date_label)
 
         layout.addWidget(content)
@@ -146,27 +149,27 @@ class WorkCard(QFrame):
     def contextMenuEvent(self, event):
         """右键菜单。"""
         menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: #ffffff;
-                border: 1px solid #d0d7de;
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {Color.SURFACE};
+                border: 1px solid {Color.BORDER};
                 border-radius: 6px;
                 padding: 4px;
-            }
-            QMenu::item {
-                color: #333333;
+            }}
+            QMenu::item {{
+                color: {Color.TEXT};
                 padding: 6px 24px;
                 border-radius: 4px;
-            }
-            QMenu::item:selected {
-                background-color: #e8f0fe;
-                color: #1a73e8;
-            }
-            QMenu::separator {
+            }}
+            QMenu::item:selected {{
+                background-color: {Color.PRIMARY_LIGHT};
+                color: {Color.PRIMARY_DARK};
+            }}
+            QMenu::separator {{
                 height: 1px;
-                background: #e0e0e0;
+                background: {Color.BORDER};
                 margin: 4px 8px;
-            }
+            }}
         """)
 
         # 云端同步切换
@@ -200,5 +203,5 @@ class WorkCard(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self.underMouse():
-            painter.setPen(QPen(QColor("#2196F3"), 2))
+            painter.setPen(QPen(QColor(Color.PRIMARY), 2))
             painter.drawRoundedRect(1, 1, self.width() - 2, self.height() - 2, 8, 8)

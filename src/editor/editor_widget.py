@@ -9,8 +9,8 @@ from PySide6.QtWidgets import QTextEdit
 from .modules.ai_assistant.markdown_render import markdown_to_html as _md_to_html
 
 
-_HIGHLIGHT_COLOR = QColor("#E8F5E9")  # 浅绿背景
-_UNDERLINE_COLOR = QColor("#4CAF50")  # 绿色下划线
+_HIGHLIGHT_COLOR = QColor("#E8F5E9")  # 浅绿背景(批注高亮,固定语义色)
+_UNDERLINE_COLOR = QColor("#4CAF50")  # 绿色下划线(固定语义色)
 
 
 class EditorWidget(QTextEdit):

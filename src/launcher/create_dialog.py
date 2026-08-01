@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..storage.meta import AVAILABLE_MODULES, WORK_TYPES, WORK_TYPE_NAMES, MODULE_NAMES
+from ..ui.theme import Color
 
 
 class CreateWorkDialog(QDialog):
@@ -82,7 +83,7 @@ class CreateWorkDialog(QDialog):
             "  提示：GitHub 仓库地址和 Token 请在「设置 → Git 版本管理」中统一配置。\n"
             "  创建后可随时通过右键菜单切换作品的云端同步状态。"
         )
-        hint.setStyleSheet("color: #888888; font-size: 11px; padding: 2px 4px;")
+        hint.setStyleSheet(f"color: {Color.TEXT_HINT}; font-size: 11px; padding: 2px 4px;")
         hint.setWordWrap(True)
         cloud_layout.addWidget(hint)
 
@@ -95,14 +96,17 @@ class CreateWorkDialog(QDialog):
         btn_layout.addStretch()
 
         cancel_btn = QPushButton("取消")
-        cancel_btn.setStyleSheet("background-color: #e0e0e0; color: #333;")
+        cancel_btn.setStyleSheet(
+            f"background-color: {Color.BG_ALT}; color: {Color.TEXT_SECONDARY};"
+            f"border: 1px solid {Color.BORDER}; border-radius: 4px; padding: 6px 16px;")
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
 
         self.create_btn = QPushButton("创建")
         self.create_btn.setEnabled(False)
         self.create_btn.setStyleSheet(
-            "background-color: #4a90d9; color: white; font-weight: bold;"
+            f"background-color: {Color.PRIMARY}; color: {Color.TEXT_INVERSE};"
+            f"font-weight: bold; border: none; border-radius: 4px; padding: 6px 16px;"
         )
         self.create_btn.clicked.connect(self._on_create)
         btn_layout.addWidget(self.create_btn)

@@ -9,6 +9,8 @@ from PySide6.QtWidgets import (
     QFileDialog, QWidget, QStackedWidget,
 )
 
+from ..ui.theme import Color
+
 
 class ImportDialog(QDialog):
     """导入对话框，选择 ZIP 导入或 Git 仓库导入。"""
@@ -81,7 +83,7 @@ class ImportDialog(QDialog):
             "需要先配置 Git，首次克隆会要求认证。\n"
             "私有仓库需要在设置中配置 GitHub Token。"
         )
-        git_info.setStyleSheet("font-size: 11px; color: #8a9aaa;")
+        git_info.setStyleSheet(f"font-size: 11px; color: {Color.TEXT_HINT};")
         git_info.setWordWrap(True)
         git_layout.addWidget(git_info)
 
@@ -92,12 +94,16 @@ class ImportDialog(QDialog):
         btn_layout.addStretch()
 
         cancel_btn = QPushButton("取消")
-        cancel_btn.setStyleSheet("background-color: #e0e0e0; color: #333;")
+        cancel_btn.setStyleSheet(
+            f"background-color: {Color.BG_ALT}; color: {Color.TEXT_SECONDARY};"
+            f"border: 1px solid {Color.BORDER}; border-radius: 4px; padding: 6px 16px;")
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
 
         self.import_btn = QPushButton("导入")
-        self.import_btn.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold;")
+        self.import_btn.setStyleSheet(
+            f"background-color: {Color.PRIMARY}; color: {Color.TEXT_INVERSE};"
+            f"font-weight: bold; border: none; border-radius: 4px; padding: 6px 16px;")
         self.import_btn.clicked.connect(self._on_import)
         btn_layout.addWidget(self.import_btn)
 

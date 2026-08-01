@@ -8,6 +8,8 @@ from PySide6.QtWidgets import (
 
 from .ai_config import load_ai_config, save_ai_config
 
+from ..ui.theme import Color
+
 
 class AISettingsPage(QWidget):
     """AI 助手设置页。"""
@@ -119,12 +121,12 @@ class AISettingsPage(QWidget):
         btn_layout = QHBoxLayout()
 
         test_btn = QPushButton("测试连接")
-        test_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #e8e8e8; border: 1px solid #d0d0d0;
-                border-radius: 4px; padding: 6px 16px;
-            }
-            QPushButton:hover { background-color: #dcdcdc; }
+        test_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Color.BG_ALT}; border: 1px solid {Color.BORDER};
+                border-radius: 4px; padding: 6px 16px; color: {Color.TEXT_SECONDARY};
+            }}
+            QPushButton:hover {{ background-color: {Color.BORDER_LIGHT}; }}
         """)
         test_btn.clicked.connect(self._on_test)
         btn_layout.addWidget(test_btn)
@@ -132,12 +134,12 @@ class AISettingsPage(QWidget):
         btn_layout.addStretch()
 
         save_btn = QPushButton("保存设置")
-        save_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4a90d9; color: white; border: none;
+        save_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Color.PRIMARY}; color: {Color.TEXT_INVERSE}; border: none;
                 border-radius: 4px; padding: 8px 24px; font-size: 13px;
-            }
-            QPushButton:hover { background-color: #3a7bc8; }
+            }}
+            QPushButton:hover {{ background-color: {Color.PRIMARY_DARK}; }}
         """)
         save_btn.clicked.connect(self._on_save)
         btn_layout.addWidget(save_btn)

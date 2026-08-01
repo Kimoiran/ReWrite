@@ -53,7 +53,7 @@ class StreamingProposalWorker(QThread):
 
     def run(self):
         try:
-            from .providers import _make_streaming_request
+            from .providers import _make_streaming_request, _check_fake_completion
             from .prompt_templates import DEFAULT_SYSTEM_PROMPT
             from .skills.registry import get_openai_tools
 
@@ -87,7 +87,10 @@ class StreamingProposalWorker(QThread):
                     self.reasoning_chunk.emit(reasoning)
                 self.proposals_ready.emit(tool_calls, before, after, system)
             else:
-                # 纯文本回复
+                # 纯文本回复：检测 AI 假装完成但没调工具的情况
+                fake_check = _check_fake_completion(full_text)
+                if fake_check:
+                    full_text = f"⚠️ {fake_check}\n\n{full_text}"
                 self.agent.history.append({"role": "assistant", "content": full_text})
                 self.agent._persist()
                 if reasoning:
@@ -95,6 +98,14 @@ class StreamingProposalWorker(QThread):
                 self.text_response.emit(full_text)
 
         except Exception as e:
+            # 回滚本次追加的 user 消息，避免历史里出现"挂起"的问题
+            h = self.agent.history
+            if h and h[-1].get("role") == "user" and h[-1].get("content") == self.message:
+                h.pop()
+                try:
+                    self.agent._persist()
+                except Exception:
+                    pass
             self.api_error.emit(str(e))
 
 

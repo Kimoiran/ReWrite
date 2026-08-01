@@ -6,7 +6,10 @@ from PySide6.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QLabel, QScrollArea,
     QFrame, QCheckBox, QTextBrowser, QSizePolicy, QApplication,
+    QToolButton, QMenu, QInputDialog,
 )
+
+from src.ui.theme import Color
 
 
 class MessageBubble(QFrame):
@@ -21,18 +24,21 @@ class MessageBubble(QFrame):
 
         role_label = QLabel("你" if role == "user" else "AI")
         role_label.setStyleSheet(
-            "font-weight: bold; font-size: 11px; color: #888888; border: none;"
+            f"font-weight: bold; font-size: 11px; color: {Color.TEXT_HINT}; border: none;"
         )
         layout.addWidget(role_label)
 
         # QTextBrowser — 固定高度基于内容，不挤缩
         self.browser = QTextBrowser()
         self.browser.setHtml(content)
-        self.browser.setOpenExternalLinks(True)
+        # 安全:禁用链接点击(openLinks 关闭内部导航,external 关闭外部打开,
+        # AI 输出中的 http/file 链接点击零动作,防 SSRF 与本地文件读取)
+        self.browser.setOpenLinks(False)
+        self.browser.setOpenExternalLinks(False)
         self.browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.browser.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
-        bg = "#E3F2FD" if role == "user" else "#F5F7FA"
+        bg = Color.PRIMARY_LIGHT if role == "user" else Color.BG_ALT
         self.browser.setStyleSheet(f"""
             QTextBrowser {{
                 padding: 8px 12px;
@@ -40,7 +46,7 @@ class MessageBubble(QFrame):
                 font-size: 13px;
                 line-height: 1.6;
                 background-color: {bg};
-                color: #1a2332;
+                color: {Color.TEXT};
                 border: none;
             }}
         """)
@@ -74,20 +80,20 @@ class LoadingBubble(QFrame):
         layout.setContentsMargins(8, 4, 8, 4)
 
         role_label = QLabel("AI")
-        role_label.setStyleSheet("font-weight: bold; font-size: 11px; color: #888888; border: none;")
+        role_label.setStyleSheet(f"font-weight: bold; font-size: 11px; color: {Color.TEXT_HINT}; border: none;")
         layout.addWidget(role_label)
 
         self.dots_label = QLabel("  思考中...")
-        self.dots_label.setStyleSheet("""
-            QLabel {
+        self.dots_label.setStyleSheet(f"""
+            QLabel {{
                 padding: 8px 12px;
                 border-radius: 8px;
                 font-size: 13px;
-                background-color: #F5F7FA;
-                color: #8a9aaa;
+                background-color: {Color.BG_ALT};
+                color: {Color.TEXT_HINT};
                 border: none;
                 font-style: italic;
-            }
+            }}
         """)
         layout.addWidget(self.dots_label)
 
@@ -96,24 +102,26 @@ class LoadingBubble(QFrame):
         self.reasoning_scroll.setWidgetResizable(True)
         self.reasoning_scroll.setMaximumHeight(400)
         self.reasoning_scroll.setVisible(False)
-        self.reasoning_scroll.setStyleSheet("""
-            QScrollArea {
-                border: 1px solid #FFE0B2;
+        self.reasoning_scroll.setStyleSheet(f"""
+            QScrollArea {{
+                border: 1px solid {Color.WARNING_BORDER};
                 border-radius: 6px;
-                background-color: #FFF8E1;
+                background-color: {Color.WARNING_BG};
                 margin-top: 2px;
-            }
+            }}
         """)
         self.reasoning_content = QLabel("")
         self.reasoning_content.setWordWrap(True)
-        self.reasoning_content.setStyleSheet("""
-            QLabel {
+        # 安全:纯文本渲染,防止流式推理内容中的 HTML 被当富文本解析
+        self.reasoning_content.setTextFormat(Qt.TextFormat.PlainText)
+        self.reasoning_content.setStyleSheet(f"""
+            QLabel {{
                 padding: 6px 10px;
                 font-size: 11px;
-                color: #795548;
+                color: {Color.WARNING_TEXT};
                 background: transparent;
                 border: none;
-            }
+            }}
         """)
         self.reasoning_scroll.setWidget(self.reasoning_content)
         layout.addWidget(self.reasoning_scroll)
@@ -149,9 +157,10 @@ class LoadingBubble(QFrame):
 
 
 class ConfirmBubble(QFrame):
-    """确认气泡 — 嵌入聊天框，带允许/取消按钮。确认后变灰显示已确认。"""
+    """确认气泡 — 嵌入聊天框，带允许/取消/全部允许按钮。确认后变灰显示已确认。"""
 
     confirmed = Signal(list)
+    auto_confirmed = Signal(list)
     cancelled = Signal()
 
     def __init__(self, descriptions: list[str], tool_calls: list, parent=None):
@@ -163,17 +172,17 @@ class ConfirmBubble(QFrame):
         layout.setContentsMargins(8, 4, 8, 4)
 
         self.role_label = QLabel("AI 请求操作")
-        self.role_label.setStyleSheet("font-weight: bold; font-size: 11px; color: #FF8F00; border: none;")
+        self.role_label.setStyleSheet(f"font-weight: bold; font-size: 11px; color: {Color.WARNING}; border: none;")
         layout.addWidget(self.role_label)
 
         self.bg_frame = QFrame()
-        self.bg_frame.setStyleSheet("""
-            QFrame {
-                background-color: #FFF8E1;
-                border: 1px solid #FFE0B2;
+        self.bg_frame.setStyleSheet(f"""
+            QFrame {{
+                background-color: {Color.WARNING_BG};
+                border: 1px solid {Color.WARNING_BORDER};
                 border-radius: 8px;
                 padding: 8px;
-            }
+            }}
         """)
         bg_layout = QVBoxLayout(self.bg_frame)
         bg_layout.setSpacing(4)
@@ -181,7 +190,7 @@ class ConfirmBubble(QFrame):
         for desc in descriptions:
             label = QLabel(f"  • {desc}")
             label.setWordWrap(True)
-            label.setStyleSheet("color: #795548; font-size: 12px; border: none;")
+            label.setStyleSheet(f"color: {Color.WARNING_TEXT}; font-size: 12px; border: none;")
             bg_layout.addWidget(label)
 
         layout.addWidget(self.bg_frame)
@@ -191,51 +200,70 @@ class ConfirmBubble(QFrame):
         self.btn_row.addStretch()
 
         self.cancel_btn = QPushButton("取消")
-        self.cancel_btn.setStyleSheet("""
-            QPushButton { font-size: 11px; padding: 4px 14px;
-                border: 1px solid #d0d0d0; border-radius: 4px;
-                background: #ffffff; color: #666; }
+        self.cancel_btn.setStyleSheet(f"""
+            QPushButton {{ font-size: 11px; padding: 4px 14px;
+                border: 1px solid {Color.BORDER}; border-radius: 4px;
+                background: {Color.SURFACE}; color: {Color.TEXT_SECONDARY}; }}
         """)
         self.cancel_btn.clicked.connect(self.cancelled.emit)
         self.btn_row.addWidget(self.cancel_btn)
 
+        self.auto_btn = QPushButton("全部允许")
+        self.auto_btn.setToolTip("允许本次及后续所有 AI 操作,不再逐条确认")
+        self.auto_btn.setStyleSheet(f"""
+            QPushButton {{ font-size: 11px; padding: 4px 14px;
+                border: 1px solid {Color.SUCCESS}; border-radius: 4px;
+                background: {Color.SUCCESS_BG}; color: {Color.SUCCESS_TEXT}; }}
+        """)
+        self.auto_btn.clicked.connect(self._on_auto_confirm)
+        self.btn_row.addWidget(self.auto_btn)
+
         self.confirm_btn = QPushButton("允许")
-        self.confirm_btn.setStyleSheet("""
-            QPushButton { font-size: 11px; padding: 4px 14px;
+        self.confirm_btn.setStyleSheet(f"""
+            QPushButton {{ font-size: 11px; padding: 4px 14px;
                 border: none; border-radius: 4px;
-                background: #2196F3; color: white; font-weight: bold; }
+                background: {Color.PRIMARY}; color: white; font-weight: bold; }}
         """)
         self.confirm_btn.clicked.connect(self._on_confirm)
         self.btn_row.addWidget(self.confirm_btn)
 
         layout.addLayout(self.btn_row)
 
-    def _on_confirm(self):
+    def _mark_confirmed(self, label_text: str):
         """标记已确认，禁用按钮，变色。"""
         self._confirmed = True
-        self.role_label.setText("✅ 已确认")
-        self.role_label.setStyleSheet("font-weight: bold; font-size: 11px; color: #4CAF50; border: none;")
-        self.bg_frame.setStyleSheet("""
-            QFrame {
-                background-color: #E8F5E9;
-                border: 1px solid #A5D6A7;
+        self.role_label.setText(label_text)
+        self.role_label.setStyleSheet(
+            f"font-weight: bold; font-size: 11px; color: {Color.SUCCESS}; border: none;")
+        self.bg_frame.setStyleSheet(f"""
+            QFrame {{
+                background-color: {Color.SUCCESS_BG};
+                border: 1px solid {Color.SUCCESS_BORDER};
                 border-radius: 8px;
                 padding: 8px;
-            }
+            }}
         """)
         for i in range(self.bg_frame.layout().count()):
             w = self.bg_frame.layout().itemAt(i).widget()
             if isinstance(w, QLabel):
-                w.setStyleSheet("color: #2E7D32; font-size: 12px; border: none;")
+                w.setStyleSheet(f"color: {Color.SUCCESS_TEXT}; font-size: 12px; border: none;")
         self.cancel_btn.setVisible(False)
+        self.auto_btn.setVisible(False)
         self.confirm_btn.setText("执行中...")
         self.confirm_btn.setEnabled(False)
-        self.confirm_btn.setStyleSheet("""
-            QPushButton { font-size: 11px; padding: 4px 14px;
+        self.confirm_btn.setStyleSheet(f"""
+            QPushButton {{ font-size: 11px; padding: 4px 14px;
                 border: none; border-radius: 4px;
-                background: #A5D6A7; color: #1B5E20; }
+                background: {Color.SUCCESS_BORDER}; color: {Color.SUCCESS_TEXT}; }}
         """)
+
+    def _on_confirm(self):
+        self._mark_confirmed("✅ 已确认")
         self.confirmed.emit(self.tool_calls)
+
+    def _on_auto_confirm(self):
+        self._mark_confirmed("✅ 已确认(后续操作自动允许)")
+        self.auto_confirmed.emit(self.tool_calls)
 
 
 class ScopeChip(QCheckBox):
@@ -245,25 +273,25 @@ class ScopeChip(QCheckBox):
         super().__init__(label, parent)
         self.scope_id = scope_id
         self.setChecked(default)
-        self.setStyleSheet("""
-            QCheckBox {
+        self.setStyleSheet(f"""
+            QCheckBox {{
                 font-size: 11px;
                 padding: 3px 8px;
-                border: 1px solid #e0e8f0;
+                border: 1px solid {Color.BORDER};
                 border-radius: 12px;
-                background-color: #f5f7fa;
-                color: #5a6a7a;
+                background-color: {Color.BG_ALT};
+                color: {Color.TEXT_SECONDARY};
                 spacing: 4px;
-            }
-            QCheckBox:checked {
-                background-color: #E3F2FD;
-                border-color: #2196F3;
-                color: #1976D2;
-            }
-            QCheckBox::indicator {
+            }}
+            QCheckBox:checked {{
+                background-color: {Color.PRIMARY_LIGHT};
+                border-color: {Color.PRIMARY};
+                color: {Color.PRIMARY_DARK};
+            }}
+            QCheckBox::indicator {{
                 width: 0;
                 height: 0;
-            }
+            }}
         """)
 
     def _get_scope(self) -> str:
@@ -277,6 +305,7 @@ class ChatPanel(QDockWidget):
     undo_requested = Signal()
     edit_memory_requested = Signal()
     compress_memory_requested = Signal()
+    clear_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__("AI 助手", parent)
@@ -291,6 +320,8 @@ class ChatPanel(QDockWidget):
         )
         self.setMinimumWidth(440)
         self._loading_bubble = None
+        # 本轮对话的第一个气泡(撤回时从它开始删除)
+        self._session_first_bubble = None
         self._setup_ui()
         self._scroll_timer = QTimer(self)
         self._scroll_timer.setSingleShot(True)
@@ -305,7 +336,7 @@ class ChatPanel(QDockWidget):
 
         # 上下文芯片
         scope_label = QLabel("AI 可以读取：")
-        scope_label.setStyleSheet("font-size: 11px; font-weight: 600; color: #5a6a7a;")
+        scope_label.setStyleSheet(f"font-size: 11px; font-weight: 600; color: {Color.TEXT_SECONDARY};")
         layout.addWidget(scope_label)
 
         self.scope_chips = {}
@@ -330,36 +361,39 @@ class ChatPanel(QDockWidget):
             ("灵感发散", ["outline", "characters", "timeline", "worldview", "map"]),
         ]:
             btn = QPushButton(label)
-            btn.setStyleSheet("font-size: 10px; padding: 2px 8px; border: 1px solid #e0e8f0; border-radius: 8px; background: #f5f7fa; color: #5a6a7a;")
+            btn.setStyleSheet(f"font-size: 10px; padding: 2px 8px; border: 1px solid {Color.BORDER}; border-radius: 8px; background: {Color.BG_ALT}; color: {Color.TEXT_SECONDARY};")
             btn.clicked.connect(lambda checked, s=scope_list: self._apply_preset(s))
             preset_layout.addWidget(btn)
 
         # 快捷创建人物按钮
         add_char_btn = QPushButton("+ 创建人物")
-        add_char_btn.setStyleSheet("font-size: 10px; padding: 2px 8px; border: 1px solid #4CAF50; border-radius: 8px; background: #E8F5E9; color: #2E7D32;")
+        add_char_btn.setToolTip("输入角色名,AI 将创建人物卡片并引导你补充信息")
+        add_char_btn.setStyleSheet(f"font-size: 10px; padding: 2px 8px; border: 1px solid {Color.SUCCESS}; border-radius: 8px; background: {Color.SUCCESS_BG}; color: {Color.SUCCESS_TEXT};")
         add_char_btn.clicked.connect(self._on_quick_add_character)
         preset_layout.addWidget(add_char_btn)
 
-        self.memory_label = QLabel("")
-        self.memory_label.setStyleSheet("font-size: 10px; color: #8a9aaa; padding: 0 4px;")
-        preset_layout.addWidget(self.memory_label)
+        # 记忆菜单(编辑/压缩/清空 收进一个按钮,计数并入按钮文本)
+        self.mem_menu_btn = QToolButton()
+        self.mem_menu_btn.setText("🧠 记忆")
+        self.mem_menu_btn.setToolTip("管理 AI 的长期记忆(对话历史)")
+        self.mem_menu_btn.setStyleSheet(f"""
+            QToolButton {{
+                font-size: 10px; padding: 2px 8px;
+                border: 1px solid {Color.BORDER}; border-radius: 8px;
+                background: {Color.BG_ALT}; color: {Color.TEXT_SECONDARY};
+            }}
+            QToolButton::menu-indicator {{ image: none; }}
+        """)
+        mem_menu = QMenu(self)
+        mem_menu.addAction("编辑记忆", self._on_edit_memory)
+        mem_menu.addAction("压缩记忆", self._on_compress_memory)
+        mem_menu.addSeparator()
+        mem_menu.addAction("清空记忆", self.clear_requested.emit)
+        self.mem_menu_btn.setMenu(mem_menu)
+        self.mem_menu_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        preset_layout.addWidget(self.mem_menu_btn)
 
-        self.edit_mem_btn = QPushButton("编辑记忆")
-        self.edit_mem_btn.setStyleSheet("font-size: 10px; padding: 2px 8px; border: none; border-radius: 8px; color: #666;")
-        self.edit_mem_btn.setToolTip("逐条查看、编辑或删除对话记录")
-        self.edit_mem_btn.clicked.connect(self._on_edit_memory)
-        preset_layout.addWidget(self.edit_mem_btn)
-
-        self.compress_btn = QPushButton("压缩记忆")
-        self.compress_btn.setStyleSheet("font-size: 10px; padding: 2px 8px; border: none; border-radius: 8px; color: #666;")
-        self.compress_btn.setToolTip("用 AI 整理并压缩历史对话")
-        self.compress_btn.clicked.connect(self._on_compress_memory)
-        preset_layout.addWidget(self.compress_btn)
-
-        self.clear_btn = QPushButton("清空记忆")
-        self.clear_btn.setStyleSheet("font-size: 10px; padding: 2px 8px; border: none; border-radius: 8px; color: #888;")
-        self.clear_btn.clicked.connect(self._on_clear)
-        preset_layout.addWidget(self.clear_btn)
+        preset_layout.addStretch()
         layout.addLayout(preset_layout)
 
         # 消息区域
@@ -378,7 +412,6 @@ class ChatPanel(QDockWidget):
         self.input_edit = QTextEdit()
         self.input_edit.setPlaceholderText("输入你的问题… 如「分析这一章的情节节奏」")
         self.input_edit.setMaximumHeight(80)
-        self.input_edit.setStyleSheet("QTextEdit { padding: 6px; font-size: 12px; }")
         self.input_edit.setAcceptRichText(False)
         self.input_edit.textChanged.connect(self._on_input_changed)
         layout.addWidget(self.input_edit)
@@ -386,22 +419,29 @@ class ChatPanel(QDockWidget):
         # 操作按钮行
         btn_layout = QHBoxLayout()
         self.undo_btn = QPushButton("↩ 撤回")
-        self.undo_btn.setStyleSheet("font-size: 10px; padding: 4px 8px; border: 1px solid #e0e0e0; border-radius: 3px; background: #fff5f5; color: #c62828;")
-        self.undo_btn.setToolTip("撤回上一条对话")
+        self.undo_btn.setStyleSheet(f"""
+            QPushButton {{ font-size: 10px; padding: 4px 8px; border: 1px solid {Color.ERROR_BORDER};
+                border-radius: 3px; background: {Color.ERROR_BG}; color: {Color.ERROR_TEXT}; }}
+            QPushButton:disabled {{ color: {Color.TEXT_HINT}; background: {Color.BG_ALT}; border-color: {Color.BORDER}; }}
+        """)
+        self.undo_btn.setToolTip("撤回上一条对话(若有 AI 数据修改会一并回滚)")
         self.undo_btn.clicked.connect(self.undo_requested.emit)
         self.undo_btn.setEnabled(False)
         btn_layout.addWidget(self.undo_btn)
 
         self.analyze_btn = QPushButton("分析全文")
-        self.analyze_btn.setStyleSheet("font-size: 11px; padding: 4px 8px; border: 1px solid #d0d0d0; border-radius: 3px; background: #f8f8f8; color: #555;")
+        self.analyze_btn.setStyleSheet(f"""
+            QPushButton {{ font-size: 11px; padding: 4px 8px; border: 1px solid {Color.BORDER};
+                border-radius: 3px; background: {Color.SURFACE}; color: {Color.TEXT_SECONDARY}; }}
+        """)
         btn_layout.addWidget(self.analyze_btn)
         btn_layout.addStretch()
         self.send_btn = QPushButton("发送")
-        self.send_btn.setStyleSheet("""
-            QPushButton { background-color: #4a90d9; color: white; border: none;
-                border-radius: 4px; padding: 6px 16px; font-size: 12px; }
-            QPushButton:hover { background-color: #3a7bc8; }
-            QPushButton:disabled { background-color: #ccc; }
+        self.send_btn.setStyleSheet(f"""
+            QPushButton {{ background-color: {Color.PRIMARY}; color: white; border: none;
+                border-radius: 4px; padding: 6px 16px; font-size: 12px; }}
+            QPushButton:hover {{ background-color: {Color.PRIMARY_DARK}; }}
+            QPushButton:disabled {{ background-color: {Color.BORDER}; }}
         """)
         self.send_btn.clicked.connect(self._on_send)
         btn_layout.addWidget(self.send_btn)
@@ -414,22 +454,15 @@ class ChatPanel(QDockWidget):
     def _on_input_changed(self):
         self.send_btn.setEnabled(bool(self.input_edit.toPlainText().strip()))
 
-    def remove_last_bubble(self):
-        """移除最后一条消息气泡。"""
-        count = self.messages_layout.count()
-        if count > 0:
-            item = self.messages_layout.takeAt(count - 1)
-            if item and item.widget():
-                item.widget().deleteLater()
-
     def set_undo_enabled(self, enabled: bool):
         self.undo_btn.setEnabled(enabled)
 
     def update_memory(self, count: int):
+        """更新记忆按钮上的计数。"""
         if count > 0:
-            self.memory_label.setText(f"🧠 {count} 条记忆")
+            self.mem_menu_btn.setText(f"🧠 记忆 ({count})")
         else:
-            self.memory_label.setText("")
+            self.mem_menu_btn.setText("🧠 记忆")
 
     def _scroll_to_bottom(self):
         """滚动消息区域到底部（延迟版本，用于一次性添加消息）。"""
@@ -446,10 +479,26 @@ class ChatPanel(QDockWidget):
             QApplication.processEvents()
             sb.setValue(sb.maximum())
 
-    def add_message(self, role: str, content: str):
+    def remove_session(self):
+        """删除从最近一次用户消息起的全部气泡(用于撤回),保留更早的对话。"""
+        if self._session_first_bubble is None:
+            return
+        idx = self.messages_layout.indexOf(self._session_first_bubble)
+        if idx >= 0:
+            while self.messages_layout.count() > idx:
+                item = self.messages_layout.takeAt(idx)
+                if item and item.widget():
+                    item.widget().deleteLater()
+        self._session_first_bubble = None
+
+    def add_message(self, role: str, content: str, track: bool = True) -> MessageBubble:
+        """添加消息气泡。track=False 用于历史回放(不记录会话起点,避免撤回误清全部历史)。"""
         bubble = MessageBubble(role, content)
         self.messages_layout.addWidget(bubble)
+        if track and self._session_first_bubble is None:
+            self._session_first_bubble = bubble
         self._scroll_to_bottom()
+        return bubble
 
     def begin_streaming_message(self) -> MessageBubble:
         """创建流式消息气泡（替代 loading），返回气泡供后续更新。"""
@@ -484,13 +533,14 @@ class ChatPanel(QDockWidget):
         self.analyze_btn.clicked.connect(callback)
 
     def _on_quick_add_character(self):
-        """快捷创建人物：填好提示词模板到输入框。"""
-        template = (
-            "请用 [EDIT] 语法帮我创建一个新角色。\n"
-            "我会逐项告诉你信息，你每次用 [EDIT:character:xxx] 写入一个字段。\n"
-            "先等我给出具体数据再操作。"
-        )
-        self.input_edit.setPlainText(template)
+        """快捷创建人物:询问角色名,填入引导提示词(走真实 skill 流程)。"""
+        name, ok = QInputDialog.getText(self, "创建角色", "角色名称:")
+        if ok and name.strip():
+            self.input_edit.setPlainText(
+                f"请帮我创建角色「{name.strip()}」:先调用 create_character 创建角色卡片,"
+                f"然后逐项询问我补充信息(年龄/身份/性格/背景/目标等),"
+                f"每次用 update_character 写入一个字段。")
+            self.input_edit.setFocus()
 
     def get_selected_scope(self) -> str:
         selected = [s.scope_id for s in self.scope_chips.values() if s.isChecked()]
@@ -516,6 +566,8 @@ class ChatPanel(QDockWidget):
         if not text:
             return
         self.send_btn.setEnabled(False)
+        # 新一轮对话:记录起始气泡,供撤回精确删除
+        self._session_first_bubble = None
         self.add_message("user", text)
         self.input_edit.clear()
         context_scope = self.get_selected_scope()
@@ -532,3 +584,4 @@ class ChatPanel(QDockWidget):
             item = self.messages_layout.takeAt(0)
             if item and item.widget():
                 item.widget().deleteLater()
+        self._session_first_bubble = None

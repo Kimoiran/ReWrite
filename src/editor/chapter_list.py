@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from .modules.chapters import ChapterModule, ChapterInfo
+from ..ui.theme import Color
 
 
 class ChapterListPanel(QDockWidget):
@@ -48,18 +49,18 @@ class ChapterListPanel(QDockWidget):
 
         # 新建章节按钮
         add_btn = QPushButton("+ 新建章节")
-        add_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4a90d9;
-                color: white;
+        add_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Color.PRIMARY};
+                color: {Color.TEXT_INVERSE};
                 border: none;
                 border-radius: 4px;
                 padding: 6px;
                 font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: #3a7bc8;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {Color.PRIMARY_DARK};
+            }}
         """)
         add_btn.clicked.connect(self._on_new_chapter)
         layout.addWidget(add_btn)
@@ -75,26 +76,26 @@ class ChapterListPanel(QDockWidget):
         )
         self.list_widget.customContextMenuRequested.connect(self._on_context_menu)
         self.list_widget.currentRowChanged.connect(self._on_selection_changed)
-        self.list_widget.setStyleSheet("""
-            QListWidget {
-                border: 1px solid #e0e0e0;
+        self.list_widget.setStyleSheet(f"""
+            QListWidget {{
+                border: 1px solid {Color.BORDER};
                 border-radius: 4px;
-                background-color: #ffffff;
+                background-color: {Color.SURFACE};
                 font-size: 13px;
-                color: #333333;
-            }
-            QListWidget::item {
+                color: {Color.TEXT};
+            }}
+            QListWidget::item {{
                 padding: 6px 8px;
-                border-bottom: 1px solid #f0f0f0;
-                color: #333333;
-            }
-            QListWidget::item:selected {
-                background-color: #e8f0fe;
-                color: #333333;
-            }
-            QListWidget::item:hover {
-                background-color: #f5f5f5;
-            }
+                border-bottom: 1px solid {Color.BORDER_LIGHT};
+                color: {Color.TEXT};
+            }}
+            QListWidget::item:selected {{
+                background-color: {Color.PRIMARY_LIGHT};
+                color: {Color.PRIMARY_DARK};
+            }}
+            QListWidget::item:hover {{
+                background-color: {Color.BG_ALT};
+            }}
         """)
         layout.addWidget(self.list_widget, stretch=1)
 
@@ -102,7 +103,7 @@ class ChapterListPanel(QDockWidget):
         self.info_label = QPushButton()
         self.info_label.setEnabled(False)
         self.info_label.setStyleSheet(
-            "text-align: left; color: #888888; font-size: 11px; "
+            f"text-align: left; color: {Color.TEXT_HINT}; font-size: 11px; "
             "border: none; padding: 2px;"
         )
         layout.addWidget(self.info_label)

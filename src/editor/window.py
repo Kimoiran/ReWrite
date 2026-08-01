@@ -17,6 +17,7 @@ from .search import SearchDialog
 from .sync import document_sync
 from ..storage.git_manager import GitManager, MigrateGit
 from ..ui.titlebar import make_frameless, attach_title_bar
+from ..ui.theme import Color
 
 
 class EditorWindow(QMainWindow):
@@ -71,7 +72,7 @@ class EditorWindow(QMainWindow):
         self.setWindowTitle("ReWrite")
         self.setMinimumSize(1100, 700)
         self.resize(1400, 900)
-        self.setStyleSheet("QMainWindow { background-color: #f0f6fa; }")
+        self.setStyleSheet(f"QMainWindow {{ background-color: {Color.BG}; }}")
 
     def _init_git(self):
         # 工作空间级 Git 仓库（works/ 目录）

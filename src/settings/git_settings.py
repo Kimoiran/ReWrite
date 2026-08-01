@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QGroupBox, QMessageBox, QCheckBox,
 )
 from ..storage.paths import get_works_dir
+from ..ui.theme import Color
 
 
 class GitSettingsPage(QWidget):
@@ -20,7 +21,7 @@ class GitSettingsPage(QWidget):
         layout.setSpacing(16)
 
         title = QLabel("Git 工作空间配置")
-        title.setStyleSheet("font-size:16px; font-weight:700; color:#1a2332;")
+        title.setStyleSheet(f"font-size:16px; font-weight:700; color:{Color.TEXT};")
         layout.addWidget(title)
 
         sub = QLabel("所有作品共享一个 Git 仓库，在启动页统一提交推送。")
@@ -126,7 +127,7 @@ class GitSettingsPage(QWidget):
             self.repo_status.setText("已保存并绑定远程仓库")
         else:
             self.repo_status.setText("已保存（将在下次推送时生效）")
-        self.repo_status.setStyleSheet("color:#4caf50; font-size:11px;")
+        self.repo_status.setStyleSheet(f"color:{Color.SUCCESS}; font-size:11px;")
 
     def _load_work_cloud_list(self, parent_layout: QVBoxLayout):
         """加载所有作品，每个一行带云同步复选框。"""
@@ -157,10 +158,10 @@ class GitSettingsPage(QWidget):
         from ..storage.work_io import set_work_cloud_enabled
         if set_work_cloud_enabled(work_path, enabled):
             self.repo_status.setText(f"已{'启用' if enabled else '取消'}「{work_path.name}」的云端同步")
-            self.repo_status.setStyleSheet("color:#4caf50; font-size:11px;")
+            self.repo_status.setStyleSheet(f"color:{Color.SUCCESS}; font-size:11px;")
         else:
             self.repo_status.setText("更新失败")
-            self.repo_status.setStyleSheet("color:#f44336; font-size:11px;")
+            self.repo_status.setStyleSheet(f"color:{Color.ERROR}; font-size:11px;")
 
     def _on_save(self):
         token = self.token_edit.text().strip()

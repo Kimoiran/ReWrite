@@ -8,12 +8,15 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional, List
 
 from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QPushButton,
     QInputDialog, QMessageBox, QMenu, QTextEdit,
-    QHeaderView, QLabel, QSplitter,
+    QHeaderView, QLabel, QSplitter, QRadioButton,
 )
+
+from src.ui.theme import Color
 
 from .base_module import BaseModule
 
@@ -70,9 +73,13 @@ class OutlineModule(BaseModule):
     def save(self):
         try:
             data = {"entries": [self._to_dict(e) for e in self.entries]}
-            self.data_path.write_text(
+            # 原子写:先写临时文件再替换,避免崩溃截断损坏 outline.json
+            tmp = self.data_path.with_suffix(".json.tmp")
+            tmp.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            import os as _os
+            _os.replace(str(tmp), str(self.data_path))
             return True
         except OSError as e:
             print(f"保存大纲失败: {e}")
@@ -174,8 +181,13 @@ class OutlineModule(BaseModule):
         return "\n".join(lines)
 
     def from_text(self, text: str):
+        """解析文档视图文本。支持内容行(无 # 前缀的缩进行)归入最近条目。
+
+        安全:标题行必须带 # 前缀;解析结果为空时不动现有数据(防止清空)。
+        """
         new_entries = []
         stack = []
+        current = None  # 最近解析的条目,内容行归入它
         for line in text.split("\n"):
             stripped = line.strip()
             if not stripped:
@@ -194,6 +206,12 @@ class OutlineModule(BaseModule):
                 else:
                     stack[-1][0].children.append(entry)
                 stack.append((entry, level))
+                current = entry
+            elif current is not None:
+                # 内容行(无 # 前缀):归入最近解析的条目,保留原有换行
+                if current.content:
+                    current.content += "\n"
+                current.content += stripped
         if new_entries:
             self.entries = new_entries
 
@@ -208,19 +226,30 @@ class ContentEditWrapper(QWidget):
         super().__init__(parent)
         self.entry_id = entry_id
         self.save_callback = save_callback
+        self._dirty = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 2, 4, 4)
         self.editor = QTextEdit()
         self.editor.setPlainText(content)
+        # 初始填充不算编辑;此后用户输入才置 dirty
+        self.editor.textChanged.connect(self._on_changed)
         self.editor.setPlaceholderText("在此输入详细内容…")
         self.editor.setFixedHeight(80)
-        self.editor.setStyleSheet("""
-            QTextEdit {
-                border: 1px solid #e0e8f0; border-radius: 4px;
-                padding: 4px; font-size: 12px; background: #fafbfc;
-            }
+        self.editor.setStyleSheet(f"""
+            QTextEdit {{
+                border: 1px solid {Color.BORDER}; border-radius: 4px;
+                padding: 4px; font-size: 12px; background: {Color.SURFACE};
+            }}
+            QTextEdit:focus {{ border-color: {Color.PRIMARY}; }}
         """)
         layout.addWidget(self.editor)
+
+    def _on_changed(self):
+        self._dirty = True
+
+    def is_dirty(self) -> bool:
+        """是否被用户实际编辑过(用于决定是否写回,避免旧快照覆盖新内容)。"""
+        return self._dirty
 
     def get_content(self) -> str:
         return self.editor.toPlainText()
@@ -228,9 +257,6 @@ class ContentEditWrapper(QWidget):
 
 class OutlineDock(QDockWidget):
     """大纲 UI — 文档视图 + 树形视图（可下拉展开写长内容）。"""
-
-    _EXPAND_MARKER = "▶ "
-    _COLLAPSE_MARKER = "▼ "
 
     def __init__(self, module: OutlineModule, parent=None):
         super().__init__("大纲", parent)
@@ -261,68 +287,93 @@ class OutlineDock(QDockWidget):
 
         # 操作行
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(4)
         self.view_toggle = QPushButton("文档视图")
         self.view_toggle.setCheckable(True)
-        self.view_toggle.setStyleSheet("""
-            QPushButton { font-size: 11px; padding: 4px 8px; border: 1px solid #e0e8f0;
-                border-radius: 4px; background: #f5f5f5; }
-            QPushButton:checked { background: #2196F3; color: white; border-color: #2196F3; }
+        self.view_toggle.setToolTip("切换到大纲文档编辑模式(文本语法)")
+        self.view_toggle.setStyleSheet(f"""
+            QPushButton {{ font-size: 11px; padding: 4px 8px; border: 1px solid {Color.BORDER};
+                border-radius: 4px; background: {Color.SURFACE}; color: {Color.TEXT_SECONDARY}; }}
+            QPushButton:hover {{ border-color: {Color.PRIMARY}; }}
+            QPushButton:checked {{ background: {Color.PRIMARY}; color: white; border-color: {Color.PRIMARY}; }}
         """)
         self.view_toggle.toggled.connect(self._on_view_toggle)
         btn_row.addWidget(self.view_toggle)
 
         add_btn = QPushButton("+ 添加")
-        add_btn.setStyleSheet("font-size: 11px; padding: 4px 8px;")
+        add_btn.setToolTip("添加顶层条目")
+        add_btn.setStyleSheet(f"""
+            QPushButton {{ font-size: 11px; padding: 4px 10px; border: 1px solid {Color.PRIMARY};
+                border-radius: 4px; background: {Color.SURFACE}; color: {Color.PRIMARY_DARK}; }}
+            QPushButton:hover {{ background: {Color.PRIMARY_LIGHT}; }}
+        """)
         add_btn.clicked.connect(self._on_add_root)
         btn_row.addWidget(add_btn)
 
         delete_btn = QPushButton("🗑")
         delete_btn.setToolTip("删除选中项")
-        delete_btn.setStyleSheet("font-size: 11px; padding: 4px 8px;")
+        delete_btn.setStyleSheet(f"""
+            QPushButton {{ font-size: 11px; padding: 4px 8px; border: 1px solid {Color.ERROR_BORDER};
+                border-radius: 4px; background: {Color.SURFACE}; color: {Color.ERROR_TEXT}; }}
+            QPushButton:hover {{ background: {Color.ERROR_BG}; }}
+        """)
         delete_btn.clicked.connect(self._on_delete)
         btn_row.addWidget(delete_btn)
 
         btn_row.addStretch()
         save_btn = QPushButton("保存")
-        save_btn.setStyleSheet("font-size: 11px; padding: 4px 12px;")
+        save_btn.setStyleSheet(f"""
+            QPushButton {{ font-size: 11px; padding: 4px 12px; border: none; border-radius: 4px;
+                background: {Color.SUCCESS}; color: white; font-weight: 600; }}
+            QPushButton:hover {{ background: {Color.SUCCESS_TEXT}; }}
+        """)
         save_btn.clicked.connect(self._on_save_all)
         btn_row.addWidget(save_btn)
         layout.addLayout(btn_row)
 
-        # ── 详情编辑区（树形模式：选中条目后显示和编辑详细内容） ──
+        # ── 详情编辑区(树形模式:选中条目后显示和编辑详细内容) ──
         self.detail_widget = QWidget()
         detail_layout = QVBoxLayout(self.detail_widget)
         detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(4)
 
         self.detail_title = QLabel("选中条目查看详情")
-        self.detail_title.setStyleSheet("font-size: 12px; font-weight: bold; color: #1a2332; padding: 0 4px;")
+        self.detail_title.setStyleSheet(
+            f"font-size: 12px; font-weight: 600; color: {Color.TEXT}; padding: 0 4px;")
         detail_layout.addWidget(self.detail_title)
 
-        # ── 详情编辑区 ──
-        self.detail_widget = QWidget()
-        detail_layout = QVBoxLayout(self.detail_widget)
-        detail_layout.setContentsMargins(0, 0, 0, 0)
-        detail_layout.setSpacing(4)
-
-        self.detail_title = QLabel("选中条目查看详情")
-        self.detail_title.setStyleSheet("font-size: 12px; font-weight: bold; color: #1a2332; padding: 0 4px;")
-        detail_layout.addWidget(self.detail_title)
+        # 状态行:标题 + 状态徽章 + 状态切换
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+        status_row.addStretch()
+        self.status_radios = {}
+        for st in ("待写", "写作中", "已完成"):
+            rb = QRadioButton(st)
+            rb.setStyleSheet(f"font-size: 11px; color: {Color.TEXT_SECONDARY}; spacing: 4px;")
+            rb.toggled.connect(lambda checked, s=st: self._on_status_changed(s) if checked else None)
+            self.status_radios[st] = rb
+            status_row.addWidget(rb)
+        detail_layout.addLayout(status_row)
 
         self.detail_edit = QTextEdit()
         self.detail_edit.setPlaceholderText("在此编辑详细内容…")
         self.detail_edit.setMinimumHeight(120)
-        self.detail_edit.setStyleSheet("""
-            QTextEdit {
-                border: 1px solid #e0e8f0; border-radius: 4px;
-                padding: 6px; font-size: 13px; line-height: 1.6;
-                background: #fafbfc;
-            }
+        self.detail_edit.setStyleSheet(f"""
+            QTextEdit {{
+                border: 1px solid {Color.BORDER}; border-radius: 6px;
+                padding: 8px; font-size: 13px; line-height: 1.6;
+                background: {Color.SURFACE};
+            }}
+            QTextEdit:focus {{ border-color: {Color.PRIMARY}; }}
         """)
+        # 脏标记:仅用户实际编辑过详情区才写回,避免旧快照覆盖展开编辑器的新内容
+        self._detail_dirty = False
+        self.detail_edit.textChanged.connect(self._on_detail_changed)
         detail_layout.addWidget(self.detail_edit, stretch=1)
 
         self.detail_status_label = QLabel("")
-        self.detail_status_label.setStyleSheet("font-size: 10px; color: #8a9aaa; padding: 0 4px;")
+        self.detail_status_label.setStyleSheet(
+            f"font-size: 10px; color: {Color.TEXT_HINT}; padding: 0 4px;")
         detail_layout.addWidget(self.detail_status_label)
 
         self.detail_widget.setVisible(False)
@@ -332,6 +383,27 @@ class OutlineDock(QDockWidget):
         self.tree.setColumnCount(1)
         self.tree.setHeaderLabels(["大纲条目"])
         self.tree.header().setStretchLastSection(True)
+        self.tree.header().setVisible(False)  # 单列不需要表头,更简洁
+        self.tree.setIndentation(16)
+        self.tree.setStyleSheet(f"""
+            QTreeWidget {{
+                border: 1px solid {Color.BORDER}; border-radius: 6px;
+                background: {Color.SURFACE}; padding: 2px;
+                font-size: 13px;
+            }}
+            QTreeWidget::item {{
+                padding: 4px 6px; border-radius: 4px; color: {Color.TEXT};
+            }}
+            QTreeWidget::item:selected {{
+                background: {Color.PRIMARY_LIGHT}; color: {Color.PRIMARY_DARK};
+            }}
+            QTreeWidget::item:hover {{
+                background: {Color.BG_ALT};
+            }}
+            QTreeWidget::item:selected:hover {{
+                background: {Color.PRIMARY_LIGHT};
+            }}
+        """)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._on_context_menu)
         self.tree.setEditTriggers(
@@ -353,14 +425,15 @@ class OutlineDock(QDockWidget):
         # 文档视图（默认隐藏）
         self.doc_edit = QTextEdit()
         self.doc_edit.setPlaceholderText(
-            "在这里直接写大纲…\n\n"
             "# [ ] 第一部\n"
             "## [x] 第一章 已完成\n"
-            "   第一章的内容描述\n"
+            "    第一章的内容描述\n"
             "## [>] 第二章 写作中\n\n"
             "[ ] 待写  [>] 写作中  [x] 已完成\n"
         )
-        self.doc_edit.setStyleSheet("border: none; padding: 8px; font-size: 14px; line-height: 1.8;")
+        self.doc_edit.setStyleSheet(
+            f"border: 1px solid {Color.BORDER}; border-radius: 6px; padding: 8px; "
+            f"font-size: 14px; line-height: 1.8; background: {Color.SURFACE};")
         self.doc_edit.setAcceptRichText(False)
         existing = self.module.to_text()
         if existing.strip():
@@ -414,57 +487,90 @@ class OutlineDock(QDockWidget):
         self._current_detail_id = entry_id
         self.detail_title.setText(f"✏ {entry.title}")
         self.detail_edit.setPlainText(entry.content)
+        self._detail_dirty = False  # 填充是程序行为,不算用户编辑
         self.detail_status_label.setText(f"状态: {entry.status}")
+        # 同步状态单选按钮(blockSignals 防递归触发保存)
+        for st, rb in self.status_radios.items():
+            rb.blockSignals(True)
+            rb.setChecked(st == entry.status)
+            rb.blockSignals(False)
+
+    def _on_status_changed(self, status: str):
+        """详情区状态切换:立即保存并刷新树。"""
+        if not self._current_detail_id:
+            return
+        # 顺序关键:① 展开的内嵌编辑器写回 ② 详情编辑器写回(当前操作区优先) ③ 更新状态 ④ 落盘。
+        # 重建树后 setCurrentItem 触发的 _on_save_detail 保存的是最新内容,不会互相覆盖。
+        self._save_tree_content()
+        self._on_save_detail()
+        self.module.update_entry(self._current_detail_id, status=status)
+        self.module.save()
+        self.detail_status_label.setText(f"状态: {status}")
+        # 刷新树以更新图标与颜色
+        self._build_tree()
+        # 恢复选中
+        def _find_item(parent_item=None):
+            for i in range(parent_item.childCount() if parent_item else self.tree.topLevelItemCount()):
+                item = parent_item.child(i) if parent_item else self.tree.topLevelItem(i)
+                if item.data(0, Qt.ItemDataRole.UserRole) == self._current_detail_id:
+                    return item
+                found = _find_item(item)
+                if found:
+                    return found
+            return None
+        target = _find_item()
+        if target:
+            self.tree.setCurrentItem(target)
+
+    def _on_detail_changed(self):
+        """详情编辑器内容变化(用户编辑)时置脏标记。"""
+        self._detail_dirty = True
 
     def _on_save_detail(self):
-        """保存详情编辑器的内容。"""
-        if self._current_detail_id:
+        """保存详情编辑器的内容(仅用户实际编辑过且内容有变化,避免旧快照覆盖其他来源的新内容)。"""
+        if self._current_detail_id and self._detail_dirty:
             content = self.detail_edit.toPlainText()
-            self.module.update_entry(self._current_detail_id, content=content)
-            self.module.save()
+            entry = self.module._find_entry(self.module.entries, self._current_detail_id)
+            if entry and content != entry.content:
+                self.module.update_entry(self._current_detail_id, content=content)
+                self.module.save()
+            self._detail_dirty = False
+
+    _STATUS_ICONS = {"待写": "○", "写作中": "◐", "已完成": "●"}
+
+    @staticmethod
+    def _status_color(status: str) -> str:
+        """状态色(运行时取当前主题,主题切换自动跟随)。"""
+        return {"待写": Color.TEXT_SECONDARY, "写作中": Color.PRIMARY_DARK,
+                "已完成": Color.SUCCESS_TEXT}.get(status, Color.TEXT)
 
     def _build_tree(self):
         self._editor_widgets.clear()
         self.tree.blockSignals(True)
         self.tree.clear()
 
-        def _add(entries, parent):
-            for e in entries:
-                item = QTreeWidgetItem(parent)
-                icon = {"待写": "○", "写作中": "◐", "已完成": "●"}.get(e.status, "○")
-                has_children = bool(e.children)
-                has_content = bool(e.content and e.content.strip())
-                # 有子条目 → 自带展开箭头；有内容但无子条目 → 加占位符制造箭头
-                if has_children:
-                    item.setText(0, f"{self._EXPAND_MARKER}{icon} {e.title}")
-                elif has_content:
-                    item.setText(0, f"{self._EXPAND_MARKER}{icon} {e.title}")
-                    ph = QTreeWidgetItem(item)
-                    ph.setFlags(Qt.ItemFlag.NoItemFlags)
-                else:
-                    item.setText(0, f"  {icon} {e.title}")
-                item.setData(0, Qt.ItemDataRole.UserRole, e.id)
-                tip = e.content[:300] if e.content else ""
-                item.setToolTip(0, f"状态: {e.status}\n{tip}" if tip else f"状态: {e.status}")
-                _add(e.children, item)
-
-        for e in self.module.entries:
-            item = QTreeWidgetItem(self.tree)
-            icon = {"待写": "○", "写作中": "◐", "已完成": "●"}.get(e.status, "○")
+        def _make_item(e, parent) -> QTreeWidgetItem:
+            item = QTreeWidgetItem(parent)
+            icon = self._STATUS_ICONS.get(e.status, "○")
             has_children = bool(e.children)
             has_content = bool(e.content and e.content.strip())
-            if has_children:
-                item.setText(0, f"{self._EXPAND_MARKER}{icon} {e.title}")
-            elif has_content:
-                item.setText(0, f"{self._EXPAND_MARKER}{icon} {e.title}")
-                ph = QTreeWidgetItem(item)
-                ph.setFlags(Qt.ItemFlag.NoItemFlags)
-            else:
-                item.setText(0, f"  {icon} {e.title}")
+            # 文本只含 状态图标 + 标题(无 ▶/▼ 前缀,展开状态由箭头本身指示)
+            item.setText(0, f"{icon} {e.title}")
+            item.setForeground(0, QColor(self._status_color(e.status)))
             item.setData(0, Qt.ItemDataRole.UserRole, e.id)
             tip = e.content[:300] if e.content else ""
             item.setToolTip(0, f"状态: {e.status}\n{tip}" if tip else f"状态: {e.status}")
-            _add(e.children, item)
+            # 有内容但无子条目 → 放一个隐藏占位子项制造展开箭头(折叠时不可见,不再有空白行)
+            if not has_children and has_content:
+                ph = QTreeWidgetItem(item)
+                ph.setFlags(Qt.ItemFlag.NoItemFlags)
+                ph.setHidden(True)
+            for c in e.children:
+                _make_item(c, item)
+            return item
+
+        for e in self.module.entries:
+            _make_item(e, self.tree)
         self.tree.blockSignals(False)
 
     def _on_item_expanded(self, item):
@@ -472,10 +578,6 @@ class OutlineDock(QDockWidget):
         entry_id = item.data(0, Qt.ItemDataRole.UserRole)
         if not entry_id:
             return
-        # 更新标记
-        text = item.text(0)
-        if text.startswith(self._EXPAND_MARKER):
-            item.setText(0, self._COLLAPSE_MARKER + text[len(self._EXPAND_MARKER):])
 
         entry = self.module._find_entry(self.module.entries, entry_id)
         if not entry or not entry.content:
@@ -488,10 +590,11 @@ class OutlineDock(QDockWidget):
         wrapper = ContentEditWrapper(entry_id, entry.content, self.module.save)
         self._editor_widgets[entry_id] = wrapper
         self.tree.blockSignals(True)
-        # 找到占位子项替换为编辑器
+        # 找到隐藏的占位子项,显示并替换为编辑器
         for i in range(item.childCount()):
             child = item.child(i)
             if child.flags() == Qt.ItemFlag.NoItemFlags:
+                child.setHidden(False)
                 self.tree.setItemWidget(child, 0, wrapper)
                 child.setSizeHint(0, QSize(200, 90))
                 break
@@ -502,30 +605,37 @@ class OutlineDock(QDockWidget):
         entry_id = item.data(0, Qt.ItemDataRole.UserRole)
         if not entry_id:
             return
-        # 更新标记
-        text = item.text(0)
-        if text.startswith(self._COLLAPSE_MARKER):
-            item.setText(0, self._EXPAND_MARKER + text[len(self._COLLAPSE_MARKER):])
 
-        # 保存内容
+        # 保存内容(仅用户实际编辑过才写回,避免旧快照覆盖其他来源的新内容)
         if entry_id in self._editor_widgets:
             wrapper = self._editor_widgets.pop(entry_id)
-            content = wrapper.get_content()
-            self.module.update_entry(entry_id, content=content)
-            self.module.save()
+            if wrapper.is_dirty():
+                content = wrapper.get_content()
+                self.module.update_entry(entry_id, content=content)
+                self.module.save()
 
-        # 清理 item widget
+        # 清理 item widget 并重新隐藏占位子项(避免折叠后出现空白行)
         self.tree.blockSignals(True)
         for i in range(item.childCount()):
             child = item.child(i)
             self.tree.removeItemWidget(child, 0)
+            if child.flags() == Qt.ItemFlag.NoItemFlags:
+                child.setHidden(True)
         self.tree.blockSignals(False)
 
     def _save_tree_content(self):
-        """保存树形视图下所有展开的内容。"""
+        """保存树形视图下所有展开的内容(仅用户实际编辑过且内容有变化的,避免旧快照覆盖新内容)。"""
+        changed = False
         for entry_id, wrapper in list(self._editor_widgets.items()):
-            content = wrapper.get_content()
-            self.module.update_entry(entry_id, content=content)
+            if wrapper.is_dirty():
+                content = wrapper.get_content()
+                entry = self.module._find_entry(self.module.entries, entry_id)
+                if entry and content != entry.content:
+                    self.module.update_entry(entry_id, content=content)
+                    changed = True
+        if changed:
+            # 立即落盘,防止"展开编辑后直接关闭"丢失内容
+            self.module.save()
         self._editor_widgets.clear()
 
     def _on_save_all(self):
@@ -553,6 +663,7 @@ class OutlineDock(QDockWidget):
             title, ok = QInputDialog.getText(self, "添加大纲条目", "条目名称:")
             if ok and title.strip():
                 self.module.add_entry(title.strip())
+                self.module.save()
                 self._build_tree()
 
     def _on_delete(self):
@@ -566,6 +677,7 @@ class OutlineDock(QDockWidget):
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
             self.module.delete_entry(entry_id)
+            self.module.save()
             self._build_tree()
 
     def _on_context_menu(self, pos):
@@ -591,6 +703,7 @@ class OutlineDock(QDockWidget):
             title, ok = QInputDialog.getText(self, "添加子条目", "子条目名称:")
             if ok and title.strip():
                 self.module.add_entry(title.strip(), entry_id)
+                self.module.save()
                 self._build_tree()
         elif action == rename_act:
             entry = self.module._find_entry(self.module.entries, entry_id)
@@ -614,13 +727,10 @@ class OutlineDock(QDockWidget):
         entry_id = self._get_entry_id(item)
         text = item.text(column).strip()
         if entry_id and text:
-            # 去掉标记符号
+            # 去掉状态图标前缀(图标 + 空格 + 标题),仅当格式匹配时剥离,避免误伤以图标开头的标题
             clean = text
-            for prefix in (self._EXPAND_MARKER, self._COLLAPSE_MARKER, "  "):
-                if clean.startswith(prefix):
-                    clean = clean[len(prefix):]
-            icons = {"○", "◐", "●"}
-            if len(clean) > 1 and clean[0] in icons:
+            if (len(clean) > 2 and clean[0] in self._STATUS_ICONS.values()
+                    and clean[1] == " "):
                 clean = clean[2:].strip()
             self.module.update_entry(entry_id, title=clean)
             self.module.save()

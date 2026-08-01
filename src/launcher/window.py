@@ -16,6 +16,7 @@ from ..storage.git_manager import GitManager
 from ..storage.workspace import Workspace
 from ..utils.stats import format_word_count
 from ..ui.titlebar import TitleBar, make_frameless
+from ..ui.theme import Color
 from .work_card import WorkCard
 from .create_dialog import CreateWorkDialog
 
@@ -125,7 +126,7 @@ class LauncherWindow(QWidget):
         self.setWindowTitle("ReWrite")
         self.setMinimumSize(800, 600)
         self.resize(1000, 700)
-        self.setStyleSheet("LauncherWindow { background-color: #f0f6fa; }")
+        self.setStyleSheet(f"LauncherWindow {{ background-color: {Color.BG}; }}")
         # 无边框标志必须在任何 widget 之前
         make_frameless(self)
 
@@ -150,42 +151,38 @@ class LauncherWindow(QWidget):
         content_layout.setSpacing(12)
 
         # ── 工具栏 ──
-        btn_style = "QPushButton{font-size:12px;padding:4px 12px;border:1px solid #d0d7de;border-radius:4px;background:#fff;color:#333;}QPushButton:hover{background:#e8eaed;}"
-        primary_style = "QPushButton{font-size:12px;font-weight:bold;padding:6px 16px;background:#2196F3;color:#fff;border:none;border-radius:4px;}QPushButton:hover{background:#1976D2;}"
-
         toolbar = QHBoxLayout()
-        import_btn = QPushButton("📥 导入")
-        import_btn.setToolTip("从 ZIP 文件或 Git 仓库导入作品")
-        import_btn.setStyleSheet(btn_style)
-        import_btn.clicked.connect(self._on_import)
-        toolbar.addWidget(import_btn)
+        self.import_btn = QPushButton("📥 导入")
+        self.import_btn.setToolTip("从 ZIP 文件或 Git 仓库导入作品")
+        self.import_btn.clicked.connect(self._on_import)
+        toolbar.addWidget(self.import_btn)
 
-        export_btn = QPushButton("📤 导出")
-        export_btn.setToolTip("导出为 .writepack")
-        export_btn.setStyleSheet(btn_style)
-        export_btn.clicked.connect(self._on_export)
-        toolbar.addWidget(export_btn)
+        self.export_btn = QPushButton("📤 导出")
+        self.export_btn.setToolTip("导出为 .writepack")
+        self.export_btn.clicked.connect(self._on_export)
+        toolbar.addWidget(self.export_btn)
 
-        new_btn = QPushButton("＋ 新作品")
-        new_btn.setStyleSheet(primary_style)
-        new_btn.clicked.connect(self._on_new_work)
-        toolbar.addWidget(new_btn)
+        self.new_btn = QPushButton("＋ 新作品")
+        self.new_btn.clicked.connect(self._on_new_work)
+        toolbar.addWidget(self.new_btn)
 
         toolbar.addStretch()
 
         # ── Git 状态 ──
         self.git_status_btn = QPushButton("⬆ 推送")
         self.git_status_btn.setToolTip("提交并推送所有作品到远程仓库")
-        self.git_status_btn.setStyleSheet("QPushButton{font-size:12px;padding:4px 12px;border:1px solid #4CAF50;border-radius:4px;background:#E8F5E9;color:#2E7D32;}QPushButton:hover{background:#C8E6C9;}")
+        self.git_status_btn.setStyleSheet(
+            f"QPushButton{{font-size:12px;padding:4px 12px;border:1px solid {Color.SUCCESS};"
+            f"border-radius:4px;background:{Color.SUCCESS_BG};color:{Color.SUCCESS_TEXT};}}"
+            f"QPushButton:hover{{background:{Color.SUCCESS_BORDER};}}")
         self.git_status_btn.clicked.connect(self._on_git_commit)
         self.git_status_btn.setVisible(False)
         toolbar.addWidget(self.git_status_btn)
 
-        settings_btn = QPushButton("⚙ 设置")
-        settings_btn.setToolTip("打开设置")
-        settings_btn.setStyleSheet(btn_style)
-        settings_btn.clicked.connect(self.settings_requested.emit)
-        toolbar.addWidget(settings_btn)
+        self.settings_btn = QPushButton("⚙ 设置")
+        self.settings_btn.setToolTip("打开设置")
+        self.settings_btn.clicked.connect(self.settings_requested.emit)
+        toolbar.addWidget(self.settings_btn)
         content_layout.addLayout(toolbar)
 
         # ── 卡片网格 ──
@@ -206,15 +203,13 @@ class LauncherWindow(QWidget):
         page_layout.setContentsMargins(0, 8, 0, 0)
         page_layout.addStretch()
         self.prev_btn = QPushButton("‹ 上一页")
-        self.prev_btn.setStyleSheet(btn_style)
         self.prev_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.prev_btn.clicked.connect(self._prev_page)
         page_layout.addWidget(self.prev_btn)
         self.page_label = QLabel("第 1/1 页")
-        self.page_label.setStyleSheet("color: #5a6a7a; font-size: 12px; padding: 4px 12px;")
+        self.page_label.setStyleSheet(f"color: {Color.TEXT_SECONDARY}; font-size: 12px; padding: 4px 12px;")
         page_layout.addWidget(self.page_label)
         self.next_btn = QPushButton("下一页 ›")
-        self.next_btn.setStyleSheet(btn_style)
         self.next_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.next_btn.clicked.connect(self._next_page)
         page_layout.addWidget(self.next_btn)
@@ -224,7 +219,7 @@ class LauncherWindow(QWidget):
 
         # ── 状态栏 ──
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color: #8a9aaa; font-size: 11px; padding: 4px 0;")
+        self.status_label.setStyleSheet(f"color: {Color.TEXT_HINT}; font-size: 11px; padding: 4px 0;")
         content_layout.addWidget(self.status_label)
 
         # ── 空状态提示 ──
@@ -233,7 +228,7 @@ class LauncherWindow(QWidget):
         ef = QFont()
         ef.setPointSize(14)
         self.empty_label.setFont(ef)
-        self.empty_label.setStyleSheet("color: #bbbbbb; padding: 80px 0;")
+        self.empty_label.setStyleSheet(f"color: {Color.TEXT_HINT}; padding: 80px 0;")
         self.empty_label.setVisible(False)
         content_layout.addWidget(self.empty_label)
 
@@ -249,6 +244,38 @@ class LauncherWindow(QWidget):
             else:
                 self.showMaximized()
         self.title_bar.maximize_requested.connect(toggle_max)
+
+        # 应用主题样式(背景 + 工具栏按钮)
+        self._apply_theme_styles()
+
+    def _apply_theme_styles(self):
+        """按当前主题重设窗口背景与工具栏按钮样式(主题切换后调用即时生效)。"""
+        self.setStyleSheet(f"LauncherWindow {{ background-color: {Color.BG}; }}")
+        btn_style = (
+            f"QPushButton{{font-size:12px;padding:4px 12px;border:1px solid {Color.BORDER};"
+            f"border-radius:4px;background:{Color.SURFACE};color:{Color.TEXT};}}"
+            f"QPushButton:hover{{background:{Color.BG_ALT};}}")
+        primary_style = (
+            f"QPushButton{{font-size:12px;font-weight:bold;padding:6px 16px;"
+            f"background:{Color.PRIMARY};color:{Color.TEXT_INVERSE};border:none;border-radius:4px;}}"
+            f"QPushButton:hover{{background:{Color.PRIMARY_DARK};}}")
+        for b in (self.import_btn, self.export_btn, self.settings_btn, self.prev_btn, self.next_btn):
+            b.setStyleSheet(btn_style)
+        self.new_btn.setStyleSheet(primary_style)
+        self.git_status_btn.setStyleSheet(
+            f"QPushButton{{font-size:12px;padding:4px 12px;border:1px solid {Color.SUCCESS};"
+            f"border-radius:4px;background:{Color.SUCCESS_BG};color:{Color.SUCCESS_TEXT};}}"
+            f"QPushButton:hover{{background:{Color.SUCCESS_BORDER};}}")
+        self.page_label.setStyleSheet(
+            f"color: {Color.TEXT_SECONDARY}; font-size: 12px; padding: 4px 12px;")
+        self.status_label.setStyleSheet(
+            f"color: {Color.TEXT_HINT}; font-size: 11px; padding: 4px 0;")
+
+    def refresh_theme(self):
+        """主题切换后刷新启动页样式、标题栏与作品卡片(立即生效)。"""
+        self._apply_theme_styles()
+        self.title_bar.refresh()
+        self._refresh()
 
     def _refresh(self):
         # 清除旧卡片（从 layout 中正确移除并销毁）

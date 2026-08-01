@@ -43,6 +43,136 @@ class Color:
     ERROR = "#F44336"
     INFO = "#2196F3"
 
+    # 语义色背景/边框/文字(状态提示用)
+    SUCCESS_BG = "#E8F5E9"
+    SUCCESS_BORDER = "#A5D6A7"
+    SUCCESS_TEXT = "#2E7D32"
+    WARNING_BG = "#FFF8E1"
+    WARNING_BORDER = "#FFE0B2"
+    WARNING_TEXT = "#795548"
+    ERROR_BG = "#FFEBEE"
+    ERROR_BORDER = "#FFCDD2"
+    ERROR_TEXT = "#C62828"
+
+
+# ── 主题系统 ──
+# 每个主题 = 上述全部 token 的完整配色。切换时通过 set_theme 更新 Color 类属性,
+# 所有 `from src.ui.theme import Color` 的引用自动跟随,无需改动各模块。
+
+_THEMES = {
+    "light_blue": {
+        "label": "浅青蓝",
+        "desc": "默认主题 · 清新明亮",
+        "colors": {k: getattr(Color, k) for k in dir(Color) if k.isupper()},
+    },
+    "paper": {
+        "label": "暖纸",
+        "desc": "米黄护眼 · 柔和纸质",
+        "colors": {
+            "BG": "#F6F1E7", "BG_ALT": "#EFE7D8", "SURFACE": "#FDFBF5",
+            "SURFACE_GLASS": "rgba(253, 251, 245, 0.85)",
+            "PRIMARY": "#C08A50", "PRIMARY_LIGHT": "#F0DFC8", "PRIMARY_DARK": "#A06E3A",
+            "ACCENT": "#7FA98F", "ACCENT_LIGHT": "#D8E8DE",
+            "TEXT": "#3E342A", "TEXT_SECONDARY": "#7A6E60", "TEXT_HINT": "#A99C8C",
+            "TEXT_INVERSE": "#FFFFFF",
+            "BORDER": "#E2D7C4", "BORDER_LIGHT": "#EFE7D8",
+            "SHADOW": "rgba(0, 0, 0, 0.06)", "SHADOW_STRONG": "rgba(0, 0, 0, 0.10)",
+            "SUCCESS": "#5B8A5E", "WARNING": "#D98E32", "ERROR": "#C25E4C", "INFO": "#5B8FB9",
+            "SUCCESS_BG": "#E4EFE3", "SUCCESS_BORDER": "#BFD8BE", "SUCCESS_TEXT": "#3F6B43",
+            "WARNING_BG": "#FBF0DC", "WARNING_BORDER": "#F0DCB4", "WARNING_TEXT": "#8A5F1F",
+            "ERROR_BG": "#F9E4DF", "ERROR_BORDER": "#EFC9C0", "ERROR_TEXT": "#A44433",
+        },
+    },
+    "dark": {
+        "label": "深夜黑",
+        "desc": "深色护眼 · 夜间写作",
+        "colors": {
+            "BG": "#1E222A", "BG_ALT": "#262B35", "SURFACE": "#2B313D",
+            "SURFACE_GLASS": "rgba(43, 49, 61, 0.85)",
+            "PRIMARY": "#5B9BD5", "PRIMARY_LIGHT": "#3D5A78", "PRIMARY_DARK": "#82B4E8",
+            "ACCENT": "#4EC9B0", "ACCENT_LIGHT": "#2C5C54",
+            "TEXT": "#D8DEE9", "TEXT_SECONDARY": "#9AA5B1", "TEXT_HINT": "#6B7684",
+            "TEXT_INVERSE": "#1E222A",
+            "BORDER": "#3A4150", "BORDER_LIGHT": "#313846",
+            "SHADOW": "rgba(0, 0, 0, 0.40)", "SHADOW_STRONG": "rgba(0, 0, 0, 0.55)",
+            "SUCCESS": "#57B36C", "WARNING": "#E0A84C", "ERROR": "#E06C5F", "INFO": "#5B9BD5",
+            "SUCCESS_BG": "#2A3B30", "SUCCESS_BORDER": "#3E5748", "SUCCESS_TEXT": "#7CC98E",
+            "WARNING_BG": "#403822", "WARNING_BORDER": "#5A4C2C", "WARNING_TEXT": "#E0B35C",
+            "ERROR_BG": "#422B2A", "ERROR_BORDER": "#5C3A38", "ERROR_TEXT": "#E58A7E",
+        },
+    },
+    "sakura": {
+        "label": "樱花粉",
+        "desc": "柔粉浪漫 · 少女心",
+        "colors": {
+            "BG": "#FFF0F2", "BG_ALT": "#FBE3E8", "SURFACE": "#FFFBFB",
+            "SURFACE_GLASS": "rgba(255, 251, 251, 0.85)",
+            "PRIMARY": "#E27396", "PRIMARY_LIGHT": "#FAD3DE", "PRIMARY_DARK": "#C2557B",
+            "ACCENT": "#B8A1D9", "ACCENT_LIGHT": "#E8DFF3",
+            "TEXT": "#4A3340", "TEXT_SECONDARY": "#8C6B7B", "TEXT_HINT": "#B79AA8",
+            "TEXT_INVERSE": "#FFFFFF",
+            "BORDER": "#F0D5DC", "BORDER_LIGHT": "#F8E7EB",
+            "SHADOW": "rgba(0, 0, 0, 0.05)", "SHADOW_STRONG": "rgba(0, 0, 0, 0.09)",
+            "SUCCESS": "#6FA477", "WARNING": "#D9A13E", "ERROR": "#D96A7A", "INFO": "#6F9EC9",
+            "SUCCESS_BG": "#E3F0E4", "SUCCESS_BORDER": "#C0DCC4", "SUCCESS_TEXT": "#46754E",
+            "WARNING_BG": "#FBF1DC", "WARNING_BORDER": "#F0DFB4", "WARNING_TEXT": "#8A641F",
+            "ERROR_BG": "#F9E2E6", "ERROR_BORDER": "#EFC7CE", "ERROR_TEXT": "#B6485A",
+        },
+    },
+}
+
+_CURRENT_THEME = "light_blue"
+
+
+def get_theme_names() -> list:
+    """返回全部主题 id 列表。"""
+    return list(_THEMES.keys())
+
+
+def get_theme_label(name: str) -> str:
+    return _THEMES.get(name, {}).get("label", name)
+
+
+def get_theme_desc(name: str) -> str:
+    return _THEMES.get(name, {}).get("desc", "")
+
+
+def get_theme_color(name: str, token: str) -> str:
+    """读取指定主题的单个 token 色值(用于预览)。"""
+    t = _THEMES.get(name)
+    if t:
+        return t["colors"].get(token, getattr(Color, token, "#000000"))
+    return getattr(Color, token, "#000000")
+
+
+def get_theme_colors(name: str) -> dict:
+    """返回指定主题的完整 token 副本(用于预览渲染)。"""
+    t = _THEMES.get(name)
+    return dict(t["colors"]) if t else {}
+
+
+def get_current_theme() -> str:
+    return _CURRENT_THEME
+
+
+def set_theme(name: str) -> bool:
+    """切换主题:更新 Color 类属性,全部现有引用自动跟随。"""
+    global _CURRENT_THEME
+    t = _THEMES.get(name)
+    if not t:
+        return False
+    for k, v in t["colors"].items():
+        setattr(Color, k, v)
+    _CURRENT_THEME = name
+    return True
+
+
+def apply_theme(name: str, app: QApplication):
+    """应用主题:更新 Color + palette + 全局 QSS(即时生效)。"""
+    if set_theme(name):
+        setup_palette(app)
+        app.setStyleSheet(global_stylesheet())
+
 
 def setup_palette(app: QApplication):
     """设置全局 QPalette。"""

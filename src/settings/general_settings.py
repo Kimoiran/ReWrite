@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
 
 from ..storage.paths import get_config_dir
 
+from ..ui.theme import Color
+
 DEFAULT_SETTINGS = {
     "autosave_delay": 3000,
     "autosave_enabled": True,
@@ -21,6 +23,7 @@ DEFAULT_SETTINGS = {
     "font_family": "Microsoft YaHei UI",
     "font_size": 14,
     "auto_git_status": True,
+    "theme": "light_blue",
 }
 
 
@@ -203,12 +206,12 @@ class GeneralSettingsPage(QWidget):
 
         # ── 保存按钮（固定在底部） ──
         save_btn = QPushButton("保存设置")
-        save_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4a90d9; color: white; border: none;
+        save_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {Color.PRIMARY}; color: {Color.TEXT_INVERSE}; border: none;
                 border-radius: 4px; padding: 8px 24px; font-size: 13px;
-            }
-            QPushButton:hover { background-color: #3a7bc8; }
+            }}
+            QPushButton:hover {{ background-color: {Color.PRIMARY_DARK}; }}
         """)
         save_btn.clicked.connect(self._on_save)
         outer.addWidget(save_btn)
@@ -232,15 +235,18 @@ class GeneralSettingsPage(QWidget):
             QMessageBox.warning(self, "迁移失败", msg)
 
     def _on_save(self):
-        self.settings["autosave_enabled"] = self.autosave_check.isChecked()
-        self.settings["autosave_delay"] = self.delay_spin.value() * 1000
-        self.settings["snapshot_enabled"] = self.snapshot_check.isChecked()
-        self.settings["max_snapshots"] = self.snapshot_spin.value()
-        self.settings["font_family"] = self.font_combo.currentFont().family()
-        self.settings["font_size"] = self.font_size_spin.value()
-        self.settings["auto_git_status"] = self.git_status_check.isChecked()
+        fields = {
+            "autosave_enabled": self.autosave_check.isChecked(),
+            "autosave_delay": self.delay_spin.value() * 1000,
+            "snapshot_enabled": self.snapshot_check.isChecked(),
+            "max_snapshots": self.snapshot_spin.value(),
+            "font_family": self.font_combo.currentFont().family(),
+            "font_size": self.font_size_spin.value(),
+            "auto_git_status": self.git_status_check.isChecked(),
+        }
         try:
-            save_settings(self.settings)
+            # 合并最新设置(不覆盖外观页等其他页面的字段,避免跨页互相回滚)
+            save_settings({**load_settings(), **fields})
             # 确认保存路径
             from ..storage.paths import get_config_dir
             saved_path = get_config_dir() / "settings.json"

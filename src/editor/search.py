@@ -7,6 +7,8 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QLabel, QPushButton,
 )
 
+from ..ui.theme import Color
+
 
 class SearchDialog(QDialog):
     """全局搜索浮窗。"""
@@ -34,11 +36,12 @@ class SearchDialog(QDialog):
             Qt.WindowType.WindowStaysOnTopHint
         )
         self.setFixedSize(480, 400)
-        self.setStyleSheet("""
-            SearchDialog {
-                border: 1px solid #e0e8f0;
+        self.setStyleSheet(f"""
+            SearchDialog {{
+                border: 1px solid {Color.BORDER};
                 border-radius: 12px;
-            }
+                background-color: {Color.SURFACE};
+            }}
         """)
 
         layout = QVBoxLayout(self)
@@ -48,13 +51,15 @@ class SearchDialog(QDialog):
         # 搜索框
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("搜索章节、人物、大纲、时间线...")
-        self.search_input.setStyleSheet("""
-            QLineEdit {
+        self.search_input.setStyleSheet(f"""
+            QLineEdit {{
                 padding: 10px 14px;
-                border: 2px solid #2196F3;
+                border: 2px solid {Color.PRIMARY};
                 border-radius: 8px;
                 font-size: 14px;
-            }
+                background-color: {Color.SURFACE};
+                color: {Color.TEXT};
+            }}
         """)
         search_font = QFont()
         search_font.setPointSize(13)
@@ -78,13 +83,13 @@ class SearchDialog(QDialog):
         # 状态栏
         status_layout = QHBoxLayout()
         self.status_label = QLabel("输入关键词开始搜索")
-        self.status_label.setStyleSheet("color: #999999; font-size: 11px;")
+        self.status_label.setStyleSheet(f"color: {Color.TEXT_HINT}; font-size: 11px;")
         status_layout.addWidget(self.status_label)
 
         status_layout.addStretch()
 
         self.hint_label = QLabel("Esc 关闭")
-        self.hint_label.setStyleSheet("color: #bbbbbb; font-size: 11px;")
+        self.hint_label.setStyleSheet(f"color: {Color.TEXT_HINT}; font-size: 11px;")
         status_layout.addWidget(self.hint_label)
 
         layout.addLayout(status_layout)

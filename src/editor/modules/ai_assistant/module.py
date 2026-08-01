@@ -12,6 +12,7 @@ from .annotation_manager import AnnotationManager
 from .orchestrator import AIOrchestrator
 from .rag import RAGEngine
 from .skills.rag_skills import SearchChaptersSkill
+from .undo_stack import AIUndoStack
 from .ui.chat_panel import ChatPanel
 from .ui.annotation_list import AnnotationListPanel
 from .memory_editor import MemoryEditor
@@ -40,6 +41,11 @@ class AIAssistantModule(BaseModule):
         # 流式显示状态
         self._streaming_bubble = None
         self._streaming_text = ""
+        # AI 写操作撤销栈 + 「全部允许」标志
+        self._undo_stack = AIUndoStack()
+        # 本轮对话开始前的快照栈深度(撤回时整轮回滚)
+        self._undo_mark = 0
+        self._auto_confirm = False
 
     # ── 生命周期 ──
 
@@ -125,11 +131,11 @@ class AIAssistantModule(BaseModule):
         for msg in self.agent.history:
             r = msg.get("role", "user"); c = msg.get("content", "")
             if c:
-                self.chat_panel.add_message(r, AIOrchestrator.render_message(c))
+                # track=False:历史回放不记录会话起点,避免启动后撤回清空全部历史气泡
+                self.chat_panel.add_message(r, AIOrchestrator.render_message(c), track=False)
         self.chat_panel.update_memory(len(self.agent.history))
         self.chat_panel.set_undo_enabled(len(self.agent.history) >= 2)
-        self.chat_panel.clear_btn.clicked.disconnect()
-        self.chat_panel.clear_btn.clicked.connect(self._on_clear_memory)
+        self.chat_panel.clear_requested.connect(self._on_clear_memory)
         self.chat_panel.undo_requested.connect(self._on_undo)
         self.chat_panel.edit_memory_requested.connect(lambda: MemoryEditor(self.agent, self.chat_panel).exec(self.parent()))
         self.chat_panel.compress_memory_requested.connect(self._on_compress_memory)
@@ -150,11 +156,35 @@ class AIAssistantModule(BaseModule):
         self.chat_panel.set_undo_enabled(False)
 
     def _on_undo(self):
+        restored_count = 0
+        # 若有 AI 写操作快照,先询问是否回滚数据(整轮:从本轮对话开始前的深度起全部恢复)
+        if len(self._undo_stack) > self._undo_mark:
+            reply = QMessageBox.question(
+                self.parent(), "撤回",
+                "AI 最近修改过作品数据。撤回将:① 恢复数据到修改前(若 AI 新建了章节文件也会删除) ② 撤回对应对话。继续?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
+                while len(self._undo_stack) > self._undo_mark:
+                    info = self._undo_stack.pop_restore()
+                    if info:
+                        restored_count += len(info.get("restored", []))
+                self._refresh_panels(None)
+            else:
+                # 用户拒绝回滚:丢弃本轮全部快照,避免后续纯对话撤回反复弹窗
+                while len(self._undo_stack) > self._undo_mark:
+                    self._undo_stack.pop_rollback()
         if self.agent.undo_last_message():
-            self.chat_panel.remove_last_bubble()
-            self.chat_panel.remove_last_bubble()
+            self.chat_panel.remove_session()
             self.chat_panel.update_memory(len(self.agent.history))
             self.chat_panel.set_undo_enabled(len(self.agent.history) >= 2)
+        # 先撤对话气泡,再补回滚提示,避免提示被 remove_session 一并删除
+        if restored_count:
+            self.chat_panel.add_message(
+                "assistant",
+                f"↩ 已回滚 AI 的数据修改（{restored_count} 个文件恢复到修改前）",
+                track=False)
+        # 撤回后更新标记,使更早轮的快照可被继续撤回
+        self._undo_mark = len(self._undo_stack)
 
     def _on_compress_memory(self):
         """用独立 API 整理压缩记忆。"""
@@ -179,23 +209,30 @@ class AIAssistantModule(BaseModule):
 
         class _CompressWorker(QThread):
             finished = Signal(str); error = Signal(str)
+
+            def __init__(self, config, history_text, parent=None):
+                super().__init__(parent)
+                self._config = config
+                self._history_text = history_text
+
             def run(self):
                 try:
                     import urllib.request
-                    config_ref = agent_ref.config
-                    provider = config_ref.get("provider", "")
-                    api_key = config_ref.get("api_key", "")
-                    api_url = config_ref.get("api_url", "") or (
+                    import json as _json
+                    config = self._config
+                    provider = config.get("provider", "")
+                    api_key = config.get("api_key", "")
+                    api_url = config.get("api_url", "") or (
                         "https://api.deepseek.com/v1" if provider in ("deepseek", "")
                         else "https://api.openai.com/v1")
-                    model = config_ref.get("model", "") or (
+                    model = config.get("model", "") or (
                         "deepseek-chat" if provider in ("deepseek", "")
                         else "gpt-4o-mini")
-                    body = json.dumps({
+                    body = _json.dumps({
                         "model": model,
                         "messages": [
                             {"role": "system", "content": "你是对话整理助手。请压缩以下对话为精炼摘要，保留所有重要信息。"},
-                            {"role": "user", "content": history_text},
+                            {"role": "user", "content": self._history_text},
                         ],
                         "max_tokens": 4096,
                     }).encode("utf-8")
@@ -204,14 +241,16 @@ class AIAssistantModule(BaseModule):
                         headers={"Authorization": f"Bearer {api_key}",
                                  "Content-Type": "application/json", "User-Agent": "ReWrite/1.0"})
                     with urllib.request.urlopen(req, timeout=120) as resp:
-                        data = json.loads(resp.read().decode("utf-8"))
+                        data = _json.loads(resp.read().decode("utf-8"))
                         self.finished.emit(data["choices"][0]["message"]["content"])
                 except Exception as e:
                     self.error.emit(str(e))
 
-        import json as _j
-        agent_ref = self.agent; module_ref = self
-        w = _CompressWorker()
+        agent_ref = self.agent
+        module_ref = self
+        w = _CompressWorker(self.agent.config, history_text)
+        # 持有引用,防止 QThread 被 GC 时仍在运行导致崩溃/信号丢失
+        self._compress_worker = w
         w.finished.connect(lambda s: _on_done(s))
         w.error.connect(lambda e: (module_ref.chat_panel.hide_loading(),
                                     QMessageBox.critical(module_ref.parent(), "错误", f"压缩失败: {e}")))
@@ -234,6 +273,8 @@ class AIAssistantModule(BaseModule):
             self.chat_panel.add_message("assistant", "请先配置 AI 服务：菜单 -> 文件 -> 设置 -> AI 助手")
             self.chat_panel.enable_send()
             return
+        # 记录本轮对话开始前的快照深度,撤回时整轮回滚
+        self._undo_mark = len(self._undo_stack)
         self._orchestrator.set_work_name(self.work_path.name)
         self.chat_panel.show_loading()
         QTimer.singleShot(100, lambda: self._do_chat(message, self.get_context(scope)))
@@ -262,55 +303,150 @@ class AIAssistantModule(BaseModule):
             self._streaming_bubble = self.chat_panel.begin_streaming_message()
         self.chat_panel.update_streaming(self._streaming_bubble, self._streaming_text)
 
+    # 工具名子串 → 影响的模块 id(按需刷新面板用)
+    _TOOL_MODULE_MAP = [
+        ("character", "characters"),
+        ("outline", "outline"),
+        ("timeline", "timeline"),
+        ("worldview", "worldview"),
+        ("map", "map"),
+        ("chapter", "chapters"),
+    ]
+
+    @staticmethod
+    def _is_read_tool(name: str) -> bool:
+        """读工具(只读,不弹确认)。"""
+        return name.startswith(("get_", "read_", "search_", "list_"))
+
+    def _module_for_tool(self, name: str) -> set:
+        for prefix, mod in self._TOOL_MODULE_MAP:
+            if name.startswith(prefix):
+                return {mod}
+        return set()
+
+    @staticmethod
+    def _parse_tool_args(tc) -> dict | None:
+        """解析工具参数;失败返回 None(调用方应跳过执行并回传错误)。"""
+        import json as _j
+        raw = tc.get("function", {}).get("arguments", "{}") or "{}"
+        try:
+            a = _j.loads(raw)
+            return a if isinstance(a, dict) else None
+        except Exception:
+            return None
+
     def _on_tool_proposals(self, tool_calls, before, after, system):
         # 清除流式气泡（工具调用不需要显示中途文本）
         self._streaming_bubble = None
         self._streaming_text = ""
-        descs = self._orchestrator.resolve_proposals(tool_calls)
-        bubble = self.chat_panel.add_confirm_bubble([d[2] for d in descs], tool_calls)
-        bubble.confirmed.connect(lambda tcs: self._execute_and_continue(tcs, after, system))
-        bubble.cancelled.connect(self._on_cancel)
-        logger.info(f"工具提案: {len(tool_calls)} 个 → 等待确认")
+        self._handle_tool_calls(tool_calls, after, system)
 
     def _on_cancel(self):
         self.chat_panel.enable_send()
         logger.info("用户取消工具操作")
 
-    def _execute_and_continue(self, tool_calls, after, system):
+    def _handle_tool_calls(self, tool_calls, after, system):
+        """统一处理一轮工具调用:读工具立即执行;写工具弹确认(或「全部允许」后直接执行)。"""
         from PySide6.QtWidgets import QApplication as _QA
+        from .markdown_render import markdown_to_html
+
+        self.chat_panel.hide_loading()
         _QA.processEvents()
 
         msgs = self._orchestrator.prepare_after_messages(tool_calls, after)
 
+        reads, writes = [], []
         for tc in tool_calls:
             name = tc["function"]["name"]
-            import json as _j
-            try:
-                raw_args = tc.get("function", {}).get("arguments", "{}")
-                a = _j.loads(raw_args) if raw_args else {}
-            except Exception:
-                a = {}
-            from .providers import _ensure_work_args
-            _ensure_work_args(name, a)
-            logger.info(f"执行工具: {name} args={a}")
-
-            if name == "update_chapter":
-                result = self._do_chapter_diff(a)
+            if self._is_read_tool(name):
+                reads.append(tc)
             else:
-                from .skills.registry import execute_skill
-                result = execute_skill(name, a)
-            logger.info(f"工具结果: {name} → type={type(result).__name__} "
-                        f"success={result.get('success') if isinstance(result, dict) else '?'} "
-                        f"error={result.get('error', '') if isinstance(result, dict) else str(result)[:200]}")
-            desc = self._orchestrator._describe_tool(name, a, result)
-            msgs.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": desc})
+                writes.append(tc)
 
-            from .markdown_render import markdown_to_html
+        # 1) 读工具:免确认直接执行
+        for tc in reads:
+            name = tc["function"]["name"]
+            a = self._parse_tool_args(tc)
+            if a is None:
+                result = {"success": False, "error": "工具参数解析失败(JSON 格式错误),请重新生成正确的参数"}
+                desc = f"❌ {name} 参数解析失败,请重新调用"
+            else:
+                from .providers import _ensure_work_args
+                from .skills.registry import execute_skill
+                _ensure_work_args(name, a)
+                result = execute_skill(name, a)
+                desc = self._orchestrator._describe_tool(name, a, result)
+            msgs.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": desc})
+            self.chat_panel.add_message("assistant", markdown_to_html(f"📖 {desc}"))
+            _QA.processEvents()
+
+        # 2) 写工具:确认(或自动)后执行
+        if not writes:
+            self._tool_loop(msgs, system)
+            return
+
+        if self._auto_confirm:
+            touched = set()
+            msgs = self._execute_writes(writes, msgs, touched)
+            self._finish_after_writes(msgs, system, touched)
+            return
+
+        descs = self._orchestrator.resolve_proposals(writes)
+        bubble = self.chat_panel.add_confirm_bubble([d[2] for d in descs], writes)
+        bubble.confirmed.connect(lambda tcs: self._on_write_confirmed(tcs, msgs, system))
+        bubble.auto_confirmed.connect(lambda tcs: self._on_write_confirmed(tcs, msgs, system, auto=True))
+        bubble.cancelled.connect(self._on_cancel)
+        logger.info(f"工具提案: {len(writes)} 个写操作 → 等待确认")
+
+    def _on_write_confirmed(self, tool_calls, msgs, system, auto=False):
+        if auto:
+            self._auto_confirm = True
+        touched = set()
+        msgs = self._execute_writes(tool_calls, msgs, touched)
+        self._finish_after_writes(msgs, system, touched)
+
+    def _execute_writes(self, tool_calls, msgs, touched):
+        """执行写工具:先快照文件(供回滚),再执行。返回更新后的 msgs。"""
+        from PySide6.QtWidgets import QApplication as _QA
+        from .markdown_render import markdown_to_html
+        from .providers import _ensure_work_args
+        from .skills.registry import execute_skill
+
+        for tc in tool_calls:
+            name = tc["function"]["name"]
+            a = self._parse_tool_args(tc)
+            if a is None:
+                result = {"success": False, "error": "工具参数解析失败(JSON 格式错误),请重新生成正确的参数"}
+                desc = f"❌ {name} 参数解析失败,请重新调用"
+            else:
+                _ensure_work_args(name, a)
+                logger.info(f"执行工具: {name} args={a}")
+                # 写操作前快照,供「撤回」回滚(读工具不经过此路径,防御性跳过)
+                pushed = not self._is_read_tool(name)
+                if pushed:
+                    self._undo_stack.push(name, a, self.work_path)
+                if name == "update_chapter":
+                    result = self._do_chapter_diff(a)
+                else:
+                    result = execute_skill(name, a)
+                if isinstance(result, dict) and result.get("success") is False and pushed:
+                    # 执行失败:丢弃快照,避免后续「撤回」误回滚未生效的操作
+                    self._undo_stack.pop_rollback()
+                elif pushed and isinstance(result, dict):
+                    # 关联实际创建/重命名的文件路径,供撤回精确删除(不误伤手动文件)
+                    self._undo_stack.attach_result(result)
+                desc = self._orchestrator._describe_tool(name, a, result)
+            touched.update(self._module_for_tool(name))
+            logger.info(f"工具结果: {name} → success={result.get('success') if isinstance(result, dict) else '?'} "
+                        f"error={result.get('error', '') if isinstance(result, dict) else str(result)[:200]}")
+            msgs.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": desc})
             self.chat_panel.add_message("assistant", markdown_to_html(f"✅ {desc}"))
             _QA.processEvents()
-            logger.info(f"执行: {name} → {result.get('success', False)}")
+        return msgs
 
-        self._refresh_panels()
+    def _finish_after_writes(self, msgs, system, touched):
+        from PySide6.QtWidgets import QApplication as _QA
+        self._refresh_panels(touched)
         self.chat_panel._scroll_to_bottom()
         self.chat_panel.show_loading()
         # 重置流式状态（tool_loop 会创建新的流式气泡）
@@ -320,20 +456,44 @@ class AIAssistantModule(BaseModule):
         self._tool_loop(msgs, system)
 
     def _do_chapter_diff(self, args: dict) -> dict:
-        """章节修改走 diff 确认。"""
-        from .skills._shared import _work_path as _wp
-        from pathlib import Path
-        work = _wp(args.get("work", "")); chapter = args.get("chapter", "")
+        """章节修改走 diff 确认。
+
+        安全:固定使用当前作品目录(self.work_path),不信任 AI 提供的 work
+        参数(防路径穿越);章节匹配限定 .md/.html 后缀。
+        """
+        work = self.work_path
+        chapter = str(args.get("chapter", ""))
         cd = work / "chapters"; old_c = ""; tp = None
         if cd.exists():
-            for f in cd.iterdir():
-                d = f.stem.split("_", 1)[-1] if "_" in f.stem else f.stem
-                if d == chapter or f.stem == chapter:
-                    old_c = f.read_text(encoding="utf-8"); tp = f; break
+            try:
+                for f in cd.iterdir():
+                    if f.suffix.lower() not in (".md", ".html"):
+                        continue
+                    d = f.stem.split("_", 1)[-1] if "_" in f.stem else f.stem
+                    if d == chapter or f.stem == chapter:
+                        old_c = f.read_text(encoding="utf-8"); tp = f; break
+            except OSError as e:
+                return {"success": False, "error": f"读取章节失败: {e}"}
         new_c = args.get("content", "")
         cn = str(tp.name) if tp else chapter
-        if old_c and new_c and self._show_diff_dialog(old_c, new_c, cn):
-            tp.write_text(new_c, encoding="utf-8")
+        if tp is None:
+            # 真实错误:未找到章节(而非误导性的「用户拒绝」),附现有章节名供 AI 自修正
+            existing = []
+            if cd.exists():
+                try:
+                    existing = sorted(
+                        (f.stem.split("_", 1)[-1] if "_" in f.stem else f.stem)
+                        for f in cd.iterdir()
+                        if not f.name.startswith(".") and f.suffix.lower() in (".md", ".html"))
+                except OSError:
+                    pass
+            return {"success": False, "error": f"未找到章节: {chapter}",
+                    "existing_chapters": existing}
+        if new_c and self._show_diff_dialog(old_c, new_c, cn):
+            try:
+                tp.write_text(new_c, encoding="utf-8")
+            except OSError as e:
+                return {"success": False, "error": f"写入章节失败: {e}"}
             logger.info(f"章节 diff 确认: {cn}")
             return {"success": True, "chapter": chapter}
         logger.info("章节 diff 被拒绝")
@@ -359,17 +519,13 @@ class AIAssistantModule(BaseModule):
                 agent_ref._persist()
                 module_ref._on_ai_response(c); return
 
-            # 还有工具调用 → 继续循环
+            # 还有工具调用 → 继续循环(读免确认/写确认由 _handle_tool_calls 统一处理)
             messages.append({"role": "assistant", "content": c,
                 "tool_calls": [{"id": t["id"], "type": "function",
                                 "function": {"name": t["function"]["name"],
                                              "arguments": t["function"]["arguments"]}}
                                for t in tcs]})
-            module_ref.chat_panel.hide_loading()
-            descs = orch.resolve_proposals(tcs)
-            module_ref.chat_panel.add_confirm_bubble(
-                [d[2] for d in descs], tcs
-            ).confirmed.connect(lambda tcs2: module_ref._execute_and_continue(tcs2, messages, system))
+            module_ref._handle_tool_calls(tcs, messages, system)
 
         w.text_chunk.connect(self._on_stream_chunk)
         w.finished.connect(on_data)
@@ -396,7 +552,6 @@ class AIAssistantModule(BaseModule):
                     self._create_module_annotations(response)
         except Exception:
             pass
-        self._refresh_panels()
         self.chat_panel._scroll_to_bottom()
         self._proposal_worker = None
 
@@ -404,17 +559,26 @@ class AIAssistantModule(BaseModule):
         self.chat_panel.hide_loading()
         self.chat_panel.add_message("assistant", f"[错误] {error_msg}")
         self.chat_panel.enable_send()
+        # 清理未完成的流式气泡状态
+        self._streaming_bubble = None
+        self._streaming_text = ""
         self._proposal_worker = None
 
     # ── 面板刷新 ──
 
-    def _refresh_panels(self):
+    def _refresh_panels(self, touched=None):
+        """刷新面板。touched: 需要刷新的模块 id 集合;None 表示全量刷新。"""
         p = self.parent()
         if not p or not hasattr(p, 'modules'):
             return
+        if not touched:
+            # 空集(未知工具)按全量刷新处理,保证面板与数据一致
+            touched = {"characters", "outline", "timeline", "worldview", "map", "chapters"}
         for mod_id, attr in [("characters", "_build_tree"), ("outline", "_build_tree"),
                               ("timeline", "_refresh"), ("worldview", "_build_tree"),
                               ("map", "_refresh")]:
+            if mod_id not in touched:
+                continue
             mod = p.modules.get(mod_id)
             if mod and hasattr(mod, 'load'):
                 mod.load()
@@ -423,12 +587,12 @@ class AIAssistantModule(BaseModule):
                     getattr(dock, attr)()
 
         chap_mod = p.modules.get("chapters")
-        if chap_mod and hasattr(chap_mod, 'load'):
+        if "chapters" in touched and chap_mod and hasattr(chap_mod, 'load'):
             chap_mod.load()
             chap_list = getattr(p, 'chapter_list', None)
             if chap_list and hasattr(chap_list, '_refresh'):
                 chap_list._refresh()
-        if self._editor:
+        if "chapters" in touched and self._editor:
             cp = self._editor.current_chapter_path()
             if cp and Path(cp).exists():
                 try:
@@ -436,13 +600,16 @@ class AIAssistantModule(BaseModule):
                     if nmd != self._editor.get_markdown():
                         pos = self._editor.textCursor().position()
                         self._editor.blockSignals(True)
-                        self._editor.setMarkdown(nmd)
-                        c = self._editor.textCursor(); c.setPosition(min(pos, len(nmd)))
-                        self._editor.setTextCursor(c)
-                        self._editor.blockSignals(False)
+                        try:
+                            self._editor.setMarkdown(nmd)
+                            c = self._editor.textCursor(); c.setPosition(min(pos, len(nmd)))
+                            self._editor.setTextCursor(c)
+                        finally:
+                            self._editor.blockSignals(False)
                 except OSError:
                     pass
-        if self._rag and chap_mod:
+        # RAG 索引仅在章节内容变化后重建(全量刷新时也重建)
+        if chap_mod and ("chapters" in touched):
             self._rag.build_index(chap_mod)
 
     # ── 批注 ──
@@ -514,6 +681,38 @@ class AIAssistantModule(BaseModule):
 
     # ── Diff 对话框 ──
 
+    @staticmethod
+    def _diff_html(old_text: str, new_text: str, side: str) -> str:
+        """生成行级 diff HTML。side='old':删除行红色删除线;side='new':新增行绿色。未变行灰色。"""
+        import difflib
+        import html as _html
+        old_lines = old_text.splitlines(keepends=True)
+        new_lines = new_text.splitlines(keepends=True)
+        sm = difflib.SequenceMatcher(None, old_lines, new_lines)
+        out = []
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == "equal":
+                lines = old_lines[i1:i2] if side == "old" else new_lines[j1:j2]
+                for line in lines:
+                    out.append(f'<span style="color:#9aa5b1;">{_html.escape(line)}</span>')
+            elif tag == "delete":
+                if side == "old":
+                    for line in old_lines[i1:i2]:
+                        out.append(f'<span style="background:#FFEBEE;color:#C62828;text-decoration:line-through;">{_html.escape(line)}</span>')
+            elif tag == "insert":
+                if side == "new":
+                    for line in new_lines[j1:j2]:
+                        out.append(f'<span style="background:#E8F5E9;color:#2E7D32;">{_html.escape(line)}</span>')
+            elif tag == "replace":
+                if side == "old":
+                    for line in old_lines[i1:i2]:
+                        out.append(f'<span style="background:#FFEBEE;color:#C62828;text-decoration:line-through;">{_html.escape(line)}</span>')
+                else:
+                    for line in new_lines[j1:j2]:
+                        out.append(f'<span style="background:#E8F5E9;color:#2E7D32;">{_html.escape(line)}</span>')
+        return ('<pre style="font-family:Consolas,Monaco,monospace;font-size:12px;'
+                'line-height:1.6;white-space:pre-wrap;">' + "".join(out) + "</pre>")
+
     def _show_diff_dialog(self, old_text: str, new_text: str, chapter_path: str) -> bool:
         from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                                        QPushButton, QSplitter, QTextBrowser, QApplication as _QA, QWidget)
@@ -521,18 +720,15 @@ class AIAssistantModule(BaseModule):
         d = QDialog(_QA.activeWindow()); d.setWindowTitle("确认章节修改")
         d.setMinimumSize(700, 450); d.resize(900, 600)
         lo = QVBoxLayout(d)
-        lo.addWidget(QLabel(f"章节修改确认: {chapter_path}"))
+        lo.addWidget(QLabel(f"章节修改确认: {chapter_path}   （红=删除行  绿=新增行  灰=未变）"))
         sp = QSplitter(_Qt.Orientation.Horizontal)
-        for label, color, text in [("旧版", "#C62828", old_text), ("新版", "#2E7D32", new_text)]:
+        for label, color, text, side in [("旧版", "#C62828", old_text, "old"),
+                                         ("新版", "#2E7D32", new_text, "new")]:
             w = QTextBrowser()
-            from .markdown_render import markdown_to_html as _mdh
-            if text.strip().startswith("<"):
-                w.setHtml(text)
-            else:
-                w.setHtml(_mdh(text))
+            w.setHtml(self._diff_html(old_text, new_text, side))
             w.setStyleSheet(
                 f"QTextBrowser{{background-color:{'#FFF5F5' if label=='旧版' else '#F1F8E9'};"
-                f"border:1px solid {'#FFCDD2' if label=='旧版' else '#C8E6C9'};padding:12px;font-size:13px;}}")
+                f"border:1px solid {'#FFCDD2' if label=='旧版' else '#C8E6C9'};padding:12px;}}")
             lbl = QLabel(label); lbl.setStyleSheet(f"color:{color};font-weight:bold;font-size:11px;")
             vbox = QVBoxLayout(); vbox.addWidget(lbl); vbox.addWidget(w)
             c = QWidget(); c.setLayout(vbox); sp.addWidget(c)

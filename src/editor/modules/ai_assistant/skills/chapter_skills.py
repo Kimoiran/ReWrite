@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 from .base_skill import Skill
-from ._shared import _work_path, _load, _save, make_chapter_html, make_chapter_md
+from ._shared import _work_path, make_chapter_md
 
 
 class GetChaptersSkill(Skill):
@@ -21,9 +21,9 @@ class GetChaptersSkill(Skill):
         chapters = []
         if chapters_dir.exists():
             for f in sorted(chapters_dir.iterdir()):
-                if f.suffix.lower() == ".html" and not f.name.startswith("."):
+                if f.suffix.lower() in (".md", ".html") and not f.name.startswith("."):
                     chapters.append({"name": f.stem, "path": str(f.relative_to(work)),
-                                     "size": f.stat().st_size})
+                                     "size": f.stat().st_size, "format": f.suffix.lower().lstrip(".")})
         return {"chapters": chapters}
     def summarize(self, result, args=None):
         return "已读取章节列表"
@@ -84,6 +84,9 @@ class CreateChapterSkill(Skill):
         title = args.get("title", "").strip()
         if not title:
             return {"success": False, "error": "章节标题不能为空"}
+        if not (work / "work.json").exists():
+            # 作品目录无效(含非法 work 名回退路径):直接报错,不创建隐藏目录
+            return {"success": False, "error": "未找到作品目录"}
 
         chapters_dir = work / "chapters"
         if not chapters_dir.exists():
@@ -117,7 +120,7 @@ class CreateChapterSkill(Skill):
 
 
 class UpdateChapterSkill(Skill):
-    """修改章节正文。注意：diff 确认由 _execute_and_continue 处理，此技能仅做实际写入。"""
+    """修改章节正文。注意：diff 确认由 module 层处理，此技能仅做实际写入。"""
 
     @property
     def name(self) -> str: return "update_chapter"
@@ -134,10 +137,12 @@ class UpdateChapterSkill(Skill):
             "required": ["chapter", "content"],
         }
     def execute(self, args, work_name=""):
-        """直接写入（调用方已通过 diff 确认）。"""
+        """直接写入(调用方已通过 diff 确认)。"""
         work = _work_path(args.get("work", work_name))
         chapter = args.get("chapter", "")
         new_content = args.get("content", "")
+        if not chapter or new_content is None:
+            return {"success": False, "error": "chapter 与 content 参数不能为空"}
         chapters_dir = work / "chapters"
 
         if not chapters_dir.exists():
@@ -154,7 +159,8 @@ class UpdateChapterSkill(Skill):
         if not target_path:
             return {"success": False, "error": f"未找到章节: {chapter}"}
 
-        _save(target_path, new_content)
+        # 章节是 Markdown 文本文件,直接写文本(不能用 _save,它会 JSON 序列化损坏内容)
+        target_path.write_text(new_content, encoding="utf-8")
         return {"success": True, "chapter": chapter}
 
     def summarize(self, result, args=None):
@@ -199,13 +205,14 @@ class RenameChapterSkill(Skill):
         if not target:
             return {"success": False, "error": f"未找到章节: {chapter}"}
 
-        # 保留序号
+        # 保留序号与原后缀(避免 .md 章节被改写成 .html 造成格式漂移)
         order = target.stem.split("_", 1)[0] if "_" in target.stem else ""
         safe_name = re.sub(r'[\\/:*?"<>|]', "", new_name).strip()[:80]
+        ext = target.suffix if target.suffix.lower() in (".md", ".html") else ".md"
         if order:
-            new_filename = f"{int(order):04d}_{safe_name}.html"
+            new_filename = f"{int(order):04d}_{safe_name}{ext}"
         else:
-            new_filename = f"{safe_name}.html"
+            new_filename = f"{safe_name}{ext}"
 
         new_path = chapters_dir / new_filename
         _os.rename(str(target), str(new_path))

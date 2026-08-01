@@ -47,16 +47,30 @@ class AIOrchestrator:
             tool_calls, before, after, system, reasoning = result
             return ("proposal", (tool_calls, before, after, system, reasoning))
 
+    _PARSE_ERROR_KEY = "_parse_error"
+
     def resolve_proposals(self, raw_tool_calls):
-        """解析工具调用列表，返回 [(name, args, description), ...]。"""
+        """解析工具调用列表，返回 [(name, args, description), ...]。
+
+        参数 JSON 解析失败时:args 含 _parse_error 标记与原始文本,
+        描述提示解析失败。调用方应跳过执行并把错误回传 AI 让其重新生成。
+        """
         descs = []
         for tc in raw_tool_calls:
             name = tc["function"]["name"]
+            raw = tc.get("function", {}).get("arguments", "{}") or "{}"
             try:
-                a = json.loads(tc.get("function", {}).get("arguments", "{}"))
-            except Exception:
-                a = {}
+                a = json.loads(raw)
+                if not isinstance(a, dict):
+                    raise ValueError("arguments 不是 JSON 对象")
+            except Exception as e:
+                a = {self._PARSE_ERROR_KEY: True,
+                     "_raw": raw[:500],
+                     "_reason": str(e)[:100]}
             self._ensure_work_args(name, a)
+            if a.get(self._PARSE_ERROR_KEY):
+                descs.append((name, a, f"⚠ 工具参数解析失败({a.get('_reason', '')}): {a.get('_raw', '')[:80]}…"))
+                continue
             if name.startswith("get_") or name.startswith("read_") or name.startswith("search_"):
                 # 读工具：描述正在做什么
                 if name == "get_worldview":
@@ -134,10 +148,10 @@ class AIOrchestrator:
         return msgs
 
     def append_tool_results(self, messages, tool_calls, results):
-        """将工具执行结果追加到消息列表。返回更新后的 messages。"""
-        for tc, (name, result) in zip(tool_calls, results):
+        """将工具执行结果追加到消息列表。results: [(args, result_dict), ...]。"""
+        for tc, (args, result) in zip(tool_calls, results):
             messages.append({"role": "tool", "tool_call_id": tc["id"],
-                            "content": self._describe_tool(name, result[1], result[0])})
+                            "content": self._describe_tool(tc["function"]["name"], args, result)})
         return messages
 
     @staticmethod
@@ -147,11 +161,14 @@ class AIOrchestrator:
         reasoning_html = ""
         m = _re.search(r'<!--REASONING-->\n(.*?)\n<!--/REASONING-->\n\n', text, _re.DOTALL)
         if m:
+            import html as _html
             reasoning_text = m.group(1)
             text = text[:m.start()] + text[m.end():]
+            # 先转义再替换换行,防止 AI 推理内容注入 HTML(如 <img>/<a href="file://">)
+            reasoning_esc = _html.escape(reasoning_text).replace(chr(10), "<br>")
             reasoning_html = (f"<div style='font-size:12px;color:#999;line-height:1.3;"
                             f"padding:4px 8px;background:#fafafa;border-left:2px solid #ddd;"
                             f"margin-bottom:8px;'><b>思考过程</b><br>"
-                            f"{reasoning_text.replace(chr(10), '<br>')}</div>")
+                            f"{reasoning_esc}</div>")
         html = markdown_to_html(text)
         return reasoning_html + html if reasoning_html else html

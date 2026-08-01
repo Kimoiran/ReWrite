@@ -12,7 +12,6 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from src.storage.workspace import Workspace
-from src.ui.theme import setup_palette, global_stylesheet
 
 
 def _clean_crash_markers(workspace: Workspace):
@@ -32,7 +31,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("ReWrite")
     app.setOrganizationName("ReWrite")
-    app.setApplicationVersion("1.1.3")
+    app.setApplicationVersion("1.2.0")
     # Windows 任务栏图标：AppUserModelID 必须在窗口创建前设置
     try:
         import ctypes
@@ -40,8 +39,13 @@ def main():
     except Exception:
         pass
 
-    # 应用现代主题
-    setup_palette(app)
+    # 应用主题(用户配置;默认浅青蓝,非法值兜底)
+    from src.settings.general_settings import load_settings
+    from src.ui.theme import apply_theme, get_theme_names
+    theme = load_settings().get("theme", "light_blue")
+    if theme not in get_theme_names():
+        theme = "light_blue"
+    apply_theme(theme, app)
 
     # 设置应用图标（任务栏和标题栏）
     # Windows 任务栏需要 .ico 格式，.png 可能不生效
@@ -57,9 +61,6 @@ def main():
     font.setFamilies(["Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", "sans-serif"])
     font.setPointSize(10)
     app.setFont(font)
-
-    # 应用全局 QSS
-    app.setStyleSheet(global_stylesheet())
 
     # 底层样式引擎
     app.setStyle("Fusion")
@@ -95,9 +96,14 @@ def main():
 
     def open_settings():
         from src.settings.window import SettingsWindow
+        from src.ui.theme import get_current_theme
         old_path = workspace.works_dir
+        old_theme = get_current_theme()
         dialog = SettingsWindow(launcher)
         dialog.exec()
+        # 主题变化 → 启动页即时刷新(背景/按钮/卡片)
+        if get_current_theme() != old_theme:
+            launcher.refresh_theme()
         # 设置关闭后检查作品路径是否变更，如有变更则刷新
         new_works_dir = get_works_dir(_project_root)
         if new_works_dir != old_path:

@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 from .base_module import BaseModule
+from ...ui.theme import Color
 
 
 @dataclass
@@ -298,10 +299,10 @@ class TimelineDock(QDockWidget):
 
         btn_layout = QHBoxLayout()
         add_btn = QPushButton("+ 添加事件")
-        add_btn.setStyleSheet("""
-            QPushButton { background-color: #4a90d9; color: white; border: none;
-                border-radius: 4px; padding: 4px 10px; font-size: 12px; }
-            QPushButton:hover { background-color: #3a7bc8; }
+        add_btn.setStyleSheet(f"""
+            QPushButton {{ background-color: {Color.PRIMARY}; color: {Color.TEXT_INVERSE}; border: none;
+                border-radius: 4px; padding: 4px 10px; font-size: 12px; }}
+            QPushButton:hover {{ background-color: {Color.PRIMARY_DARK}; }}
         """)
         add_btn.clicked.connect(self._on_add)
         btn_layout.addWidget(add_btn)

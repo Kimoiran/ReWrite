@@ -65,6 +65,7 @@ Desktop.ini
 # Temp test scripts and unused tools
 scripts/*
 !scripts/build_exe.py
+!scripts/test_ai_assistant.py
 mcp/test_*.py
 
 # MCP server (removed)
@@ -75,3 +76,5 @@ src/mcp_manager.py
 docs/release-notes/
 doc/
 .VSCodeCounter/
+.reasonix/
+reasonix.toml

@@ -4,18 +4,25 @@ from PySide6.QtCore import Qt, Signal, QPoint
 from PySide6.QtGui import QFont, QPainter, QColor, QPen, QBrush
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
+from .theme import Color
+
 
 class WinButton(QPushButton):
     """Windows 风格标题栏按钮：46x30 矩形，黑色图标，悬停有背景色。"""
 
-    def __init__(self, symbol, hover_color="#e0e0e0", close=False, parent=None):
+    def __init__(self, symbol, hover_color=None, close=False, parent=None):
         super().__init__(parent)
-        self._hover = hover_color
+        self._hover = hover_color or Color.BG_ALT
         self._sym = symbol
         self._close = close
         self.setFixedSize(46, 30)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet("border: none; background: transparent;")
+
+    def refresh_theme_hover(self):
+        """主题切换后刷新悬停背景色。"""
+        if not self._close:
+            self._hover = Color.BG_ALT
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -23,7 +30,7 @@ class WinButton(QPushButton):
         is_hover = self.underMouse()
         if is_hover:
             p.fillRect(self.rect(), QColor(self._hover))
-        icon_color = "#ffffff" if (is_hover and self._close) else "#1a1a1a"
+        icon_color = "#ffffff" if (is_hover and self._close) else Color.TEXT
         p.setPen(QPen(QColor(icon_color), 1))
         f = QFont()
         f.setPointSize(9)
@@ -42,26 +49,28 @@ class TitleBar(QWidget):
         self._drag_start = QPoint()
         self._maximized = False
         self.setFixedHeight(38)
-        self.setStyleSheet("TitleBar { background-color: #ffffff; border-bottom: 1px solid #e0e8f0; }")
+        self._apply_theme_styles()
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 0, 8, 0)
 
-        icon = QLabel("✍")
-        icon.setStyleSheet("font-size: 15px; border: none; color: #2196F3;")
-        layout.addWidget(icon)
+        self.icon_label = QLabel("✍")
+        self.icon_label.setStyleSheet(
+            f"font-size: 15px; border: none; color: {Color.PRIMARY};")
+        layout.addWidget(self.icon_label)
         layout.addSpacing(6)
 
         self.title_label = QLabel(title)
         f = QFont()
         f.setPointSize(11)
         self.title_label.setFont(f)
-        self.title_label.setStyleSheet("color: #1a2332; border: none;")
+        self.title_label.setStyleSheet(f"color: {Color.TEXT}; border: none;")
         layout.addWidget(self.title_label)
         layout.addStretch()
 
         self.min_btn = WinButton("─")
         self.max_btn = WinButton("□")
+        # 关闭按钮悬停红 #e81123 为 Windows 惯例色,不随主题
         self.close_btn = WinButton("✕", hover_color="#e81123", close=True)
 
         m = QHBoxLayout()
@@ -74,6 +83,23 @@ class TitleBar(QWidget):
         self.close_btn.clicked.connect(self.close_requested.emit)
         self.min_btn.clicked.connect(self.minimize_requested.emit)
         self.max_btn.clicked.connect(self.maximize_requested.emit)
+
+    def _apply_theme_styles(self):
+        """按当前主题设置标题栏样式(背景/边框/图标/标题文字)。"""
+        self.setStyleSheet(
+            f"TitleBar {{ background-color: {Color.SURFACE};"
+            f"border-bottom: 1px solid {Color.BORDER}; }}")
+        if getattr(self, "icon_label", None) is not None:
+            self.icon_label.setStyleSheet(
+                f"font-size: 15px; border: none; color: {Color.PRIMARY};")
+        if getattr(self, "title_label", None) is not None:
+            self.title_label.setStyleSheet(f"color: {Color.TEXT}; border: none;")
+
+    def refresh(self):
+        """主题切换后刷新标题栏样式(即时生效)。"""
+        self._apply_theme_styles()
+        for b in (self.min_btn, self.max_btn):
+            b.refresh_theme_hover()
 
     def set_title(self, text):
         self.title_label.setText(text)

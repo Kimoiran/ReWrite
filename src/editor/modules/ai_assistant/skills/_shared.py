@@ -39,6 +39,17 @@ def _works_dir() -> Path:
 
 def _work_path(name: str) -> Path:
     wd = _works_dir()
+    _INVALID = ".__invalid_work_name__"  # 必定不存在的点前缀名(匹配循环与 list_works 均跳过)
+    # 安全:只允许纯目录名,拒绝路径分隔符/绝对路径/..(防路径穿越)
+    if not name:
+        return wd / _INVALID
+    import os as _os
+    import re as _re
+    if _os.path.isabs(name) or _os.sep in name or (_os.altsep and _os.altsep in name) \
+            or ".." in Path(name).parts or name in (".", "..") \
+            or _re.match(r"^[A-Za-z]:", name):  # 防 Windows 盘符形式(C:foo)
+        # 非法名称:回退到必定不存在的名字,技能会自然返回"未找到",不会误写 works 根
+        return wd / _INVALID
     for child in wd.iterdir():
         if not child.is_dir() or child.name.startswith("."):
             continue
