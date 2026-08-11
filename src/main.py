@@ -3,7 +3,7 @@
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication
 
@@ -36,6 +36,14 @@ def main():
     try:
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Kimoiran.ReWrite")
+    except Exception:
+        pass
+
+    # Windows 定时器精度 1ms(默认 ~15.6ms):QPropertyAnimation 帧率
+    # 从 ~64fps 提升到近 1000Hz tick,高刷屏(120/180Hz)动画不再卡顿闪烁
+    try:
+        import ctypes
+        ctypes.windll.winmm.timeBeginPeriod(1)
     except Exception:
         pass
 
@@ -79,19 +87,43 @@ def main():
 
     # 持有编辑器引用，防止被垃圾回收
     _editor_ref = []
+    _switching = []  # 打开作品淡出过渡中标志(防重复点击/editor 泄漏)
 
     def open_editor(work_path: str):
         from src.editor.window import EditorWindow
-        editor = EditorWindow(work_path)
+        if _switching:
+            return  # 构造/切换中,忽略重复点击
+        _switching.append(True)
+        try:
+            editor = EditorWindow(work_path)
+        finally:
+            _switching.pop()
+        _editor_ref.append(editor)
 
         def on_editor_closed():
+            if _switching:
+                return  # 打开过程中,忽略关闭回调
             _editor_ref.clear()
-            launcher.refresh_after_edit()
-            launcher.show()
+            launcher._skip_fade_in = True  # 直接切换:本次显示跳过淡入(先置位,兜底路径一致)
+            try:
+                launcher.refresh_after_edit()
+                # 恢复启动页几何与透明度,直接显示(无动画)
+                prev_geo = getattr(launcher, "_prev_geometry", None)
+                if prev_geo is not None:
+                    launcher.setGeometry(prev_geo)
+                launcher.show()
+            except Exception:
+                launcher.show()  # 兜底:异常也要回到主页
+            finally:
+                # 本次切换后恢复淡入(下次打开作品等场景仍生效)
+                QTimer.singleShot(0, lambda: setattr(launcher, "_skip_fade_in", False))
 
         editor.closed.connect(on_editor_closed)
-        _editor_ref.append(editor)
+
+        # 直接切换(无开关动画):记录启动页几何 → 隐藏 → 显示编辑器
+        launcher._prev_geometry = launcher.geometry()
         launcher.hide()
+        editor._skip_fade_in = True
         editor.show()
 
     def open_settings():
@@ -113,8 +145,10 @@ def main():
 
     launcher.open_work_requested.connect(open_editor)
     launcher.settings_requested.connect(open_settings)
-    launcher.show()
-
+    # 启动:先弹品牌标识卡(ReWrite × Kimoiran),再展开启动页
+    from src.ui.transition import BrandSplash
+    splash = BrandSplash(on_hidden=launcher.show)
+    splash.play_in(hold_ms=650)
     sys.exit(app.exec())
 
 

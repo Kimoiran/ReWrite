@@ -5,7 +5,8 @@ from typing import Any
 from .base_skill import Skill
 from .character_skills import (GetCharacterGroupsSkill, GetCharactersSkill, CreateCharacterSkill,
                                 UpdateCharacterSkill, AddGroupSkill, DeleteCharacterSkill, DeleteGroupSkill)
-from .outline_skills import GetOutlineSkill, UpdateOutlineEntrySkill, DeleteOutlineEntrySkill
+from .outline_skills import (GetOutlineSkill, CreateOutlineEntrySkill,
+                             UpdateOutlineEntrySkill, DeleteOutlineEntrySkill)
 from .chapter_skills import (GetChaptersSkill, ReadChapterSkill, CreateChapterSkill,
                                 UpdateChapterSkill, RenameChapterSkill, DeleteChapterSkill)
 from .timeline_skills import (CreateTimelineEventSkill, GetTimelineSkill,
@@ -28,6 +29,7 @@ def get_all_skills() -> list[Skill]:
         DeleteCharacterSkill(),
         DeleteGroupSkill(),
         GetOutlineSkill(),
+        CreateOutlineEntrySkill(),
         UpdateOutlineEntrySkill(),
         DeleteOutlineEntrySkill(),
         CreateTimelineEventSkill(),
@@ -54,11 +56,22 @@ def get_all_skills() -> list[Skill]:
     ]
 
 
+def _normalize_name(name: str) -> str:
+    """技能名规范化:去下划线/连字符/空格并小写(容错匹配用)。"""
+    return "".join(ch for ch in (name or "").lower() if ch.isalnum())
+
+
 def get_skill(name: str) -> Skill | None:
     """按名称查找技能。"""
     for s in get_all_skills():
         if s.name == name:
             return s
+    # 容错:AI 可能去掉下划线/连字符(如 createoutlineentry → create_outline_entry)
+    nn = _normalize_name(name)
+    if nn:
+        for s in get_all_skills():
+            if nn == _normalize_name(s.name):
+                return s
     return None
 
 

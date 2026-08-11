@@ -545,6 +545,9 @@ class OutlineDock(QDockWidget):
                 "已完成": Color.SUCCESS_TEXT}.get(status, Color.TEXT)
 
     def _build_tree(self):
+        # 重建前:① 保存展开编辑器的脏内容(避免重建丢失) ② 收集展开状态(重建后恢复)
+        self._save_tree_content()
+        expanded_ids = self._collect_expanded_ids()
         self._editor_widgets.clear()
         self.tree.blockSignals(True)
         self.tree.clear()
@@ -572,6 +575,40 @@ class OutlineDock(QDockWidget):
         for e in self.module.entries:
             _make_item(e, self.tree)
         self.tree.blockSignals(False)
+        # 恢复之前的展开状态(更改条目后子条目不再自动收起)
+        self._restore_expanded(expanded_ids)
+
+    def _collect_expanded_ids(self) -> set:
+        """收集当前展开的条目 id(重建后用于恢复)。"""
+        ids = set()
+
+        def _walk(parent):
+            n = parent.childCount() if parent else self.tree.topLevelItemCount()
+            for i in range(n):
+                item = parent.child(i) if parent else self.tree.topLevelItem(i)
+                eid = item.data(0, Qt.ItemDataRole.UserRole)
+                if eid and item.isExpanded():
+                    ids.add(eid)
+                _walk(item)
+
+        _walk(None)
+        return ids
+
+    def _restore_expanded(self, ids: set):
+        """重建后恢复展开状态(触发 itemExpanded → 重新挂载内容编辑器)。"""
+        if not ids:
+            return
+
+        def _walk(parent):
+            n = parent.childCount() if parent else self.tree.topLevelItemCount()
+            for i in range(n):
+                item = parent.child(i) if parent else self.tree.topLevelItem(i)
+                eid = item.data(0, Qt.ItemDataRole.UserRole)
+                if eid and eid in ids:
+                    item.setExpanded(True)
+                _walk(item)
+
+        _walk(None)
 
     def _on_item_expanded(self, item):
         """展开条目时加载内容编辑器。"""

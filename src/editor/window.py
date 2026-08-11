@@ -4,9 +4,10 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QMainWindow, QMessageBox, QInputDialog, QLineEdit
+from PySide6.QtWidgets import QMainWindow, QMessageBox, QInputDialog, QLineEdit, QWidget, QHBoxLayout
 
 from .editor_widget import EditorWidget
+from .annotations.gutter import AnnotationGutter
 from .toolbar import EditorToolbar
 from .chapter_list import ChapterListPanel
 from .statusbar import EditorStatusBar
@@ -18,6 +19,7 @@ from .sync import document_sync
 from ..storage.git_manager import GitManager, MigrateGit
 from ..ui.titlebar import make_frameless, attach_title_bar
 from ..ui.theme import Color
+from ..ui.dock_utils import DockCloseReturnFilter
 
 
 class EditorWindow(QMainWindow):
@@ -32,6 +34,8 @@ class EditorWindow(QMainWindow):
         self.modules = {}
         self.docks = {}
         self._right_docks = []  # 用于 tabify
+        # 浮动 dock 关闭时自动停靠回原位(持有引用防 GC)
+        self._dock_close_filter = DockCloseReturnFilter(self)
         self._read_module_config()
         self._setup_title()
         self._init_git()
@@ -41,7 +45,8 @@ class EditorWindow(QMainWindow):
         self._setup_save_engine()
         self._setup_menu()
         self._connect_signals()
-        self._load_initial_chapter()
+        # 章节内容延迟到事件循环空闲后加载(窗口先显示,避免打开作品卡顿)
+        QTimer.singleShot(0, self._load_initial_chapter)
         self._start_git_polling()
         # 附加标题栏（布局完成后）
         bar = attach_title_bar(self)
@@ -54,6 +59,11 @@ class EditorWindow(QMainWindow):
             from ..ui.titlebar import _fix_taskbar_icon
             _fix_taskbar_icon(self)
             self._need_icon_fix = False
+        # 首次显示淡入动画(打开作品时的过渡;expand_from_center 张开时跳过)
+        if not getattr(self, '_faded_in', False) and not getattr(self, '_skip_fade_in', False):
+            self._faded_in = True
+            from ..ui.animations import fade_in
+            fade_in(self)
 
     def _read_module_config(self):
         from ..storage.meta import load_meta
@@ -102,6 +112,7 @@ class EditorWindow(QMainWindow):
             dock = instance.create_dock_widget()
             if dock is not None:
                 self.docks[mod_id] = dock
+                dock.installEventFilter(self._dock_close_filter)
                 self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
                 self._right_docks.append(dock)
 
@@ -109,6 +120,7 @@ class EditorWindow(QMainWindow):
                 for extra_dock in instance.get_extra_docks():
                     extra_name = f"{mod_id}_annotations"
                     self.docks[extra_name] = extra_dock
+                    extra_dock.installEventFilter(self._dock_close_filter)
                     self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, extra_dock)
                     self._right_docks.append(extra_dock)
 
@@ -120,13 +132,26 @@ class EditorWindow(QMainWindow):
 
     def _setup_editor(self):
         self.editor = EditorWidget()
-        self.setCentralWidget(self.editor)
+        # 右侧批注边条(Word 式批注位置标记,点击跳转)
+        self.annotation_gutter = AnnotationGutter(self.editor)
+        editor_container = QWidget()
+        layout = QHBoxLayout(editor_container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self.editor, stretch=1)
+        layout.addWidget(self.annotation_gutter)
+        self.setCentralWidget(editor_container)
+
+        # 手动批注:编辑器右键「添加批注」→ 创建章节批注
+        self.editor.annotation_requested.connect(self._on_manual_annotation)
+        self.editor.annotations_changed.connect(self.annotation_gutter._update_marks)
 
         self.toolbar = EditorToolbar(self.editor, self)
         self.addToolBar(self.toolbar)
 
         chap_mod = self.modules.get("chapters")
         self.chapter_list = ChapterListPanel(chap_mod)
+        self.chapter_list.installEventFilter(self._dock_close_filter)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.chapter_list)
 
         self.status_bar = EditorStatusBar()
@@ -280,11 +305,42 @@ class EditorWindow(QMainWindow):
         document_sync.register(path_str, self.editor.apply_sync)
         self.status_bar.show_saved()
 
-        # 加载该章节的批注高亮
+        # 加载该章节的批注高亮(先按锚点重定位,再渲染)
+        self._refresh_chapter_annotations()
+
+    def _refresh_chapter_annotations(self):
+        """刷新当前章节批注:锚点重定位 → 渲染高亮 → 更新边条。"""
         ai_mod = self.modules.get("ai_assistant")
-        if ai_mod and hasattr(ai_mod, "annotation_mgr"):
-            chapter_anns = ai_mod.annotation_mgr.get_chapter_annotations(path_str)
-            self.editor.set_annotations(chapter_anns)
+        if not (ai_mod and hasattr(ai_mod, "annotation_mgr")):
+            return
+        path_str = self.editor.current_chapter_path()
+        if not path_str:
+            return
+        mgr = ai_mod.annotation_mgr
+        mgr.relocate_chapter(path_str, self.editor.get_plain_text())
+        self.editor.set_annotations(mgr.get_chapter_annotations(path_str))
+
+    def _on_manual_annotation(self, highlight_text: str, suggestion: str):
+        """手动批注:选中文本 + 建议 → 创建章节批注(Word 式)。"""
+        ai_mod = self.modules.get("ai_assistant")
+        if not (ai_mod and hasattr(ai_mod, "annotation_mgr")):
+            return
+        path_str = self.editor.current_chapter_path()
+        if not path_str:
+            return
+        mgr = ai_mod.annotation_mgr
+        from .annotations.manager import _find_text
+        plain = self.editor.get_plain_text()
+        sp, ep = _find_text(plain, highlight_text)
+        mgr.add_annotation(
+            target_type="chapter", target_path=path_str,
+            target_title=Path(path_str).stem, suggestion=suggestion,
+            highlight_text=highlight_text, start_pos=sp, end_pos=ep,
+            source="manual")
+        mgr.save()
+        if hasattr(ai_mod, "annotation_panel"):
+            ai_mod.annotation_panel.refresh()
+        self._refresh_chapter_annotations()
 
     def _on_editor_modified(self):
         """内容变化：实时写入 + 更新字数 + 更新侧栏。不发射信号。"""
@@ -564,6 +620,11 @@ class EditorWindow(QMainWindow):
                     QMessageBox.warning(self, "失败", f"Token 验证失败: {e}")
 
     def closeEvent(self, event):
+        if getattr(self, '_closed', False):
+            event.accept()  # 防重:关闭流程已完成,忽略重复 close
+            return
+        self._closed = True
+        # 直接关闭(无收缩动画):保存各模块 → 通知 → 真正关闭
         for mod_id, mod in self.modules.items():
             try:
                 mod.save()

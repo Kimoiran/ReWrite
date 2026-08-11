@@ -9,7 +9,7 @@ from typing import Optional, List
 
 import shutil as _su
 
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
@@ -365,6 +365,11 @@ class WorldviewDock(QDockWidget):
         h3_btn.setToolTip("三级标题"); h3_btn.clicked.connect(lambda: self._set_heading(3))
         toolbar.addWidget(h3_btn)
 
+        normal_btn = QPushButton("T"); normal_btn.setStyleSheet(btn_style)
+        normal_btn.setToolTip("正文(取消标题)")
+        normal_btn.clicked.connect(lambda: self._set_heading(0))
+        toolbar.addWidget(normal_btn)
+
         list_btn = QPushButton("• List"); list_btn.setStyleSheet(btn_style)
         list_btn.setToolTip("无序列表"); list_btn.clicked.connect(self._insert_list)
         toolbar.addWidget(list_btn)
@@ -380,10 +385,18 @@ class WorldviewDock(QDockWidget):
         self.editor = QTextEdit()
         self.editor.setAcceptRichText(True)
         self.editor.setPlaceholderText("在此编写世界观设定…(加粗/斜体/标题/列表/表格,所见即所得)")
+        # 标题级默认样式表:headingLevel 设置后立即渲染(h1-h6 视觉即时生效,
+        # 修复"选 H2 后需切换条目才显示"的延迟渲染问题)
+        self.editor.document().setDefaultStyleSheet(
+            "h1 { font-size: 17pt; font-weight: 700; margin-top: 0; margin-bottom: 6px; }"
+            "h2 { font-size: 15pt; font-weight: 700; margin-top: 0; margin-bottom: 6px; }"
+            "h3 { font-size: 14pt; font-weight: 700; margin-top: 0; margin-bottom: 6px; }"
+            "h4 { font-size: 13pt; font-weight: 700; }"
+            "h5, h6 { font-size: 12pt; font-weight: 700; }")
         self.editor.setStyleSheet(f"""
             QTextEdit {{
                 border: 1px solid {Color.BORDER}; border-radius: 6px;
-                padding: 8px; font-size: 14px; line-height: 1.8;
+                padding: 8px; font-size: 14pt; line-height: 1.8;
                 background: {Color.SURFACE};
                 font-family: 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
             }}
@@ -469,12 +482,68 @@ class WorldviewDock(QDockWidget):
         self.editor.setFocus()
 
     def _set_heading(self, level: int):
-        """当前块设为标题(1-3 级,0 为正文)。"""
-        from PySide6.QtGui import QTextBlockFormat
+        """将文本设为标题(1-3 级,0 为正文)。
+
+        有选区且选区从块首开始(单块内):把选中文字拆出为独立标题块,
+        其余保持正文——符合"选中段首'铜币'点 H2,只有'铜币'变标题"的直觉;
+        无选区/段中选区/跨块选区:整个光标所在块设为标题。
+        视觉:直接合并字符格式(字号+加粗),立即生效(不依赖 Qt 样式表);
+        语义:设置 headingLevel,保证导出为 #。
+        """
+        from PySide6.QtGui import QTextBlockFormat, QTextCharFormat, QFont, QTextCursor
+        sizes = {0: 14, 1: 17, 2: 15, 3: 14}
+        cfmt = QTextCharFormat()
+        cfmt.setFontPointSize(sizes.get(level, 14))
+        cfmt.setFontWeight(QFont.Weight.Bold if level > 0 else QFont.Weight.Normal)
         bfmt = QTextBlockFormat()
         if level > 0:
             bfmt.setHeadingLevel(level)
-        self.editor.textCursor().setBlockFormat(bfmt)
+
+        cursor = self.editor.textCursor()
+        selected = cursor.selectedText()
+        sel_start = cursor.selectionStart()
+        start_block = self.editor.document().findBlock(sel_start)
+        at_block_start = (sel_start == start_block.position())
+        if (cursor.hasSelection() and selected and at_block_start
+                and "\u2029" not in selected and "\u2028" not in selected
+                and "\n" not in selected):
+            # 段首选区:拆出为独立标题块,原块剩余保持正文
+            cursor.removeSelectedText()
+            if cursor.block().text() == "":
+                # 选区覆盖整块:直接整块应用,避免残留空块
+                cursor.insertText(selected)
+                cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
+                cursor.setBlockFormat(bfmt)
+                cursor.mergeCharFormat(cfmt)
+                cursor.clearSelection()
+                cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock)
+                self.editor.setTextCursor(cursor)
+                self.editor.setCurrentCharFormat(cfmt)
+                self.editor.setFocus()
+                return
+            # 拆分分支只处理段首选区(at_block_start 已保证),删除后光标必在块首
+            pos = cursor.position()       # 记录删除点(块首)
+            cursor.insertBlock()          # 分裂:空前段 / 后段
+            cursor.setPosition(pos)       # 回到分裂点(空前段)
+            cursor.setBlockFormat(bfmt)   # 标题块格式
+            cursor.setCharFormat(cfmt)    # 标题块字符格式(输入/插入生效)
+            cursor.insertText(selected)   # 标题文本
+            self.editor.setTextCursor(cursor)
+            self.editor.setFocus()
+            return
+
+        # 无选区、段中选区或跨块选区:整块应用标题
+        cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
+        cursor.setBlockFormat(bfmt)
+        cursor.mergeCharFormat(cfmt)
+        # 清除选中并移光标到块尾,避免后续打字替换整个标题块
+        cursor.clearSelection()
+        cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock)
+        self.editor.setTextCursor(cursor)
+        # 仅空块场景:设置当前默认字符格式,后续输入也按标题样式显示;
+        # 有内容块不设置(光标处格式已正确),避免格式残留到其他块/后续输入
+        if cursor.block().text() == "":
+            self.editor.setCurrentCharFormat(cfmt)
         self.editor.setFocus()
 
     def _insert_list(self):

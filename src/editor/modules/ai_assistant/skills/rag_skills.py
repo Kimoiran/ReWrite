@@ -34,7 +34,11 @@ class SearchChaptersSkill(Skill):
 
     def execute(self, args, work_name=""):
         engine = self._engine
-        if not engine or not engine._ready:
+        if not engine:
+            return {"success": False, "error": "RAG 引擎未初始化，请先打开作品加载章节"}
+        if not engine._ready:
+            engine.build_index()  # 惰性兑底:首次搜索时即时构建索引
+        if not engine._ready or not engine._chunks:
             return {"success": False, "error": "RAG 引擎未初始化，请先打开作品加载章节"}
         query = args.get("query", "").strip()
         if not query:

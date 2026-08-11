@@ -1,6 +1,7 @@
 """API 供应商抽象层 — Claude / OpenAI / 自定义 + 工具调用。"""
 
 import json
+import re
 import urllib.request, urllib.error
 from abc import ABC, abstractmethod
 
@@ -264,16 +265,23 @@ def _extract_reasoning(data: dict) -> str:
 
 
 class _StreamReadError(Exception):
-    """流读取阶段异常 — 不重试(可能已向 UI 推送部分内容)。"""
+    """流读取阶段异常。
 
-    def __init__(self, cause):
-        super().__init__(str(cause))
-        self.cause = cause
+    emitted=True:已向 UI 推送过部分内容 → 不重试(避免重复推送);
+    emitted=False:连接建立后立刻被断开(如 WinError 10054)→ 可安全整体重试。
+    """
+    def __init__(self, cause: Exception, emitted: bool = False):
+        super().__init__(cause)
+        self.emitted = emitted
+
+
+class _StreamStopped(Exception):
+    """用户点击「停止」主动中断流式生成(携带已生成的部分由调用方决定去留)。"""
 
 
 def _make_streaming_request(agent, messages: list, system_prompt: str = "",
                              on_reasoning=None, on_content=None, tools: list = None,
-                             retries: int = 2):
+                             retries: int = 2, stop_event=None):
     """流式请求，边接收边回调。返回 (full_text, tool_calls, reasoning)。
 
     - on_reasoning(chunk): 收到推理内容时回调
@@ -315,6 +323,8 @@ def _make_streaming_request(agent, messages: list, system_prompt: str = "",
             done = False
             try:
                 while not done:
+                    if stop_event is not None and stop_event.is_set():
+                        raise _StreamStopped()  # 用户停止:中断读取(部分内容已回调)
                     raw_chunk = resp.read(4096)
                     if not raw_chunk:
                         break
@@ -368,15 +378,15 @@ def _make_streaming_request(agent, messages: list, system_prompt: str = "",
                         if done:
                             break
             except (urllib.error.HTTPError, OSError, TimeoutError) as e:
-                # 读取中途失败:不再重试,避免已推送的流式内容重复
-                raise _StreamReadError(e) from e
+                # 读取中断:已输出内容则不再重试(避免重复推送);
+                # 未输出任何内容(如 10054 建连即断)标记 emitted=False 供外层重试
+                raise _StreamReadError(e, emitted=bool(result_parts or reasoning_parts)) from e
 
         full_text = "".join(result_parts)
         reasoning = "".join(reasoning_parts)
         tool_calls = list(tool_calls_map.values()) if tool_calls_map else []
         return full_text, tool_calls, reasoning
 
-    last_err = None
     for attempt in range(retries + 1):
         try:
             full_text, tool_calls, reasoning = _stream_once()
@@ -386,36 +396,65 @@ def _make_streaming_request(agent, messages: list, system_prompt: str = "",
                 logger.info(f"流式请求收集到 {len(tool_calls)} 个工具调用: "
                             f"{[(tc['function']['name'], tc['function']['arguments'][:200]) for tc in tool_calls]}")
             return full_text, tool_calls, reasoning
-        except _StreamReadError:
-            raise  # 读取阶段失败:已推送过部分内容,不重试
+        except _StreamReadError as e:
+            if not e.emitted and attempt < retries:
+                # 尚未输出任何内容(连接建立后立刻被断开,如 WinError 10054)
+                # → 安全整体重试,不影响已显示内容
+                _time.sleep(1.5 * (attempt + 1))  # 退避,避免 10054 后立即重连抖动
+                continue
+            raise  # 已推送部分内容:不重试,避免重复
         except urllib.error.HTTPError as e:
             # 仅对可重试状态码重试;4xx 其余直接抛
             if e.code in (429, 500, 502, 503, 504) and attempt < retries:
-                last_err = f"HTTP {e.code}"
                 _time.sleep(1.5 * (attempt + 1))
                 continue
             raise
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             if attempt < retries:
-                last_err = str(e)
                 _time.sleep(1.5 * (attempt + 1))
                 continue
-            raise
-    raise last_err if isinstance(last_err, Exception) else RuntimeError("请求失败")
+            raise  # 最后一次失败:传播原始异常(供 friendly_api_error 映射,如 10054)
 
 
 _FAKE_PATTERN = ["✅ ", "已修改", "已经修改", "已创建", "已经创建", "已删除", "已经删除",
                  "已更新", "已经更新", "已完成", "已经完成", "已恢复", "已经恢复",
                  "操作完成", "改好了", "创建好了", "删除完成"]
+# 行动承诺类:AI 说"要修/会用工具"但本轮没调任何工具 → 同样视为假完成,
+# 触发"请立即调用工具"重试,而不是把计划当最终回复(修复"说完计划就卡住")。
+# 组合匹配收紧:动作动词(修改/重写/…)或工具名(update_chapter 等)才命中,
+# 避免误伤"让我先分析一下""我会用更生动的语言"等正常分析/建议回复。
+_FAKE_PROMISE_RE = [
+    re.compile(r"让我(?:直接|来|先|现在|马上)?(?:修改|修复|重写|更新|创建|删除|调用|执行|重命名)"),
+    re.compile(r"我来(?:修改|修复|重写|更新|创建|删除|调整)"),
+    re.compile(r"我(?:现在|这)就(?:去)?(?:修改|修复|重写|更新|创建|删除|调用|执行)"),
+    re.compile(r"我(?:会|将|将会)用\s*(?:工具|update_chapter|create_character|update_character|"
+               r"delete_character|rename_chapter|get_chapters|read_chapter)"),
+]
+_TOOL_NAME_RE = re.compile(r"[a-z_]+\(")
+
+
+def friendly_api_error(err: str) -> str:
+    """把底层异常消息映射为用户可读的提示(网络中断/超时等)。"""
+    if ("10054" in err or "RemoteDisconnected" in err or "ConnectionResetError" in err
+            or "远程主机强迫关闭" in err):
+        return ("网络连接被服务端中断(10054)。可能是网络波动、请求过大或服务端超时。"
+                "请重试;若频繁出现,建议缩短对话上下文或检查网络。")
+    if "timed out" in err.lower() or "timeout" in err.lower():
+        return "请求超时。请重试;若频繁出现,建议缩短对话上下文。"
+    return err
 
 
 def _check_fake_completion(content: str) -> str:
-    """检测 AI 是否在没有调用工具的情况下假装完成了操作。"""
+    """检测 AI 是否在没有调用工具的情况下假装完成了操作(或承诺行动但未执行)。"""
     if not content:
         return ""
     for marker in _FAKE_PATTERN:
         if marker in content:
             return "未检测到工具调用——以上内容仅为 AI 文字描述，数据未被实际修改。请重新操作。"
+    for pat in _FAKE_PROMISE_RE:
+        if pat.search(content) and not _TOOL_NAME_RE.search(content):
+            # 说了行动承诺但文本中没有任何工具调用(如 update_chapter(...))
+            return "你承诺要修改数据,但本轮没有调用任何工具。请立即调用相应工具(如 update_chapter)完成操作,不要只描述计划。"
     return ""
 
 
@@ -507,12 +546,14 @@ def get_proposals_only(agent, message: str, context: str = ""):
     if not tool_calls:
         agent.history.append({"role": "assistant", "content": content})
         agent._persist()
-        # 推理内容用特殊标记包围，在 markdown 渲染前提取
-        if reasoning:
-            content = f"<!--REASONING-->\n{reasoning}\n<!--/REASONING-->\n\n{content}"
+        # 假完成检测在拼接推理内容之前进行——推理草稿常含"让我先修改"等
+        # 行动承诺措辞,误拼接会导致正常分析回复被加 ⚠️ 警告前缀
         fake_check = _check_fake_completion(content)
         if fake_check:
             content = f"⚠️ {fake_check}\n\n{content}"
+        # 推理内容用特殊标记包围，在 markdown 渲染前提取
+        if reasoning:
+            content = f"<!--REASONING-->\n{reasoning}\n<!--/REASONING-->\n\n{content}"
         return content
 
     # 构建传递用的 messages

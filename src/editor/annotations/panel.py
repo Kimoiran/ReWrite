@@ -1,4 +1,4 @@
-"""批注列表面板 — 跨模块查看和管理 AI 批注。"""
+"""批注列表面板 — 跨模块查看和管理批注(独立于 AI 模块,主题化)。"""
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -6,7 +6,15 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QLabel, QMenu,
 )
 
-from ..annotation_manager import AnnotationManager
+from ...ui.theme import Color
+from .manager import AnnotationManager
+
+try:
+    _TEXT_FORMAT_ROLE = Qt.ItemDataRole.TextFormatRole
+except AttributeError:
+    # PySide6 6.11 的 ItemDataRole 枚举缺失 TextFormatRole;
+    # Qt C++ 定义 TextFormatRole = UserRole + 1(0x0101)
+    _TEXT_FORMAT_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 class AnnotationListPanel(QDockWidget):
@@ -14,6 +22,7 @@ class AnnotationListPanel(QDockWidget):
 
     annotation_accepted = Signal(str)
     annotation_ignored = Signal(str)
+    annotation_deleted = Signal(str)
     annotation_clicked = Signal(str)  # annotation_id
 
     def __init__(self, annotation_manager: AnnotationManager, parent=None):
@@ -33,15 +42,25 @@ class AnnotationListPanel(QDockWidget):
 
     def _setup_ui(self):
         widget = QWidget()
+        widget.setStyleSheet(f"background-color: {Color.SURFACE};")
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(4, 4, 4, 4)
 
         self.count_label = QLabel("待处理: 0")
-        self.count_label.setStyleSheet("color: #888888; font-size: 11px;")
+        self.count_label.setStyleSheet(
+            f"color: {Color.TEXT_HINT}; font-size: 11px;")
         layout.addWidget(self.count_label)
 
         self.list_widget = QListWidget()
-        self.list_widget.setStyleSheet("""QListWidget::item { padding: 8px; }""")
+        self.list_widget.setStyleSheet(f"""
+            QListWidget {{
+                border: 1px solid {Color.BORDER}; border-radius: 4px;
+                background: {Color.SURFACE}; color: {Color.TEXT}; font-size: 12px;
+            }}
+            QListWidget::item {{ padding: 6px 8px; border-bottom: 1px solid {Color.BORDER_LIGHT}; }}
+            QListWidget::item:selected {{ background: {Color.PRIMARY_LIGHT}; color: {Color.PRIMARY_DARK}; }}
+            QListWidget::item:hover {{ background: {Color.BG_ALT}; }}
+        """)
         self.list_widget.itemDoubleClicked.connect(self._on_item_clicked)
         self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._on_context_menu)
@@ -59,10 +78,15 @@ class AnnotationListPanel(QDockWidget):
             display = f"{icon} {title}: {ann.suggestion[:50]}"
             if len(ann.suggestion) > 50:
                 display += "…"
-            status_icon = {"pending": "🟡", "accepted": "🟢", "ignored": "⚪"}.get(ann.status, "🟡")
+            status_icon = {"pending": "🟡", "accepted": "🟢",
+                           "ignored": "⚪"}.get(ann.status, "🟡")
             item = QListWidgetItem(f"{status_icon} {display}")
+            # 纯文本渲染,防止 AI 可控文本按富文本解析(视觉伪造)
+            item.setData(_TEXT_FORMAT_ROLE, Qt.TextFormat.PlainText)
             item.setData(Qt.ItemDataRole.UserRole, ann.id)
-            item.setToolTip(f"[{type_tag}] {title}\n{ann.suggestion}")
+            # suggestion/title 转义后进 tooltip,防止 AI 文本按富文本解析注入
+            import html as _html
+            item.setToolTip(f"[{type_tag}] {_html.escape(title)}\n{_html.escape(ann.suggestion)}")
             self.list_widget.addItem(item)
             if ann.status == "pending":
                 pending += 1
@@ -95,4 +119,5 @@ class AnnotationListPanel(QDockWidget):
             self.refresh()
         elif action == delete_act:
             self.annotation_manager.delete_annotation(ann_id)
+            self.annotation_deleted.emit(ann_id)
             self.refresh()

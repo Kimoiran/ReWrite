@@ -87,6 +87,10 @@ class RAGEngine:
         self._idf: dict[str, float] = {}     # {token: idf}
         self._ready = False
 
+    def needs_index(self) -> bool:
+        """索引是否缺失(有章节模块但尚未构建)。"""
+        return not self._ready and self.chapter_module is not None
+
     def build_index(self, chapter_module=None):
         """扫描所有章节，分块并建立 TF-IDF 索引。
 

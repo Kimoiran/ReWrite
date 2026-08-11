@@ -217,8 +217,11 @@ def document_to_markdown(doc: QTextDocument) -> str:
 
 def load_markdown_into(editor, md: str):
     """加载 Markdown 到 QTextEdit(渲染为富文本,所见即所得)。"""
+    from PySide6.QtGui import QTextCharFormat
     editor.blockSignals(True)
     editor.setHtml(md_to_html(md))
+    # 重置当前字符格式,防止上一个操作(如点过 H1)的格式残留到加载后的输入
+    editor.setCurrentCharFormat(QTextCharFormat())
     editor.blockSignals(False)
 
 

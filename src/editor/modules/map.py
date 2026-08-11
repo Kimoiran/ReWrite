@@ -7,15 +7,16 @@ from typing import Optional, List
 
 from PySide6.QtCore import Qt, QRectF, QPointF, QLineF
 from PySide6.QtGui import (QPainter, QColor, QPen, QBrush, QFont, QPolygonF,
-                            QCursor, QPainterPath)
+                            QCursor, QPainterPath, QTextOption)
 from PySide6.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGraphicsView, QGraphicsScene,
     QGraphicsEllipseItem, QGraphicsLineItem,
     QGraphicsPolygonItem, QGraphicsPathItem, QGraphicsItem,
+    QGraphicsTextItem,
     QInputDialog, QMessageBox, QFormLayout,
     QLineEdit, QTextEdit, QComboBox, QDialogButtonBox, QDialog,
-    QMenu, QGraphicsSimpleTextItem,
+    QMenu, QGraphicsSimpleTextItem, QColorDialog,
 )
 from .base_module import BaseModule
 from ...ui.theme import Color
@@ -54,6 +55,7 @@ NODE_TYPE_CONFIG = {
     "city":     {"label": "城市", "size": 9,  "color": "#FFA726"},
     "district": {"label": "街区", "size": 6,  "color": "#AB47BC"},
     "poi":      {"label": "地标", "size": 4,  "color": "#EF5350"},
+    "note":     {"label": "备注", "size": 8,  "color": "#FFD54F"},
 }
 
 SNAP_DIST = 20
@@ -212,14 +214,17 @@ class RoutePathItem(QGraphicsPathItem):
         return super().itemChange(change, value)
 
 
-class MapNodeItem(QGraphicsEllipseItem):
+class MapNodeItem(QGraphicsPathItem):
     NODE_RADIUS = 0
+    NOTE_W, NOTE_H = 150, 60  # 备注便签尺寸
 
     def __init__(self, node_data: dict, on_move=None, parent=None):
         super().__init__(parent)
         self.node_data = node_data
         self._on_move = on_move
         self._label = QGraphicsSimpleTextItem(node_data.get("name", ""), self)
+        self._note_text = QGraphicsTextItem(self)  # 备注内容(仅 note 类型显示)
+        self._note_text.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
@@ -230,17 +235,53 @@ class MapNodeItem(QGraphicsEllipseItem):
         cfg = NODE_TYPE_CONFIG.get(self.node_data.get("node_type", "city"), NODE_TYPE_CONFIG["city"])
         base_r = self.node_data.get("radius") or cfg["size"]
         r = MapNodeItem.NODE_RADIUS if MapNodeItem.NODE_RADIUS > 0 else base_r
-        self.setRect(-r, -r, r * 2, r * 2)
         color = QColor(self.node_data.get("color") or cfg["color"])
-        self.setBrush(QBrush(color))
-        self.setPen(QPen(QColor(color).darker(120), 1))
-        fs = self.node_data.get("font_size") or (9 if cfg["size"] >= 10 else 7)
-        italic = self.node_data.get("font_italic", False)
-        f = QFont(); f.setPointSize(int(fs)); f.setItalic(italic)
-        self._label.setFont(f)
-        self._label.setPos(r + 4, -max(r / 2, 4))
-        self._label.setBrush(QBrush(QColor(Color.TEXT)))
-        self._label.setText(self.node_data.get("name", ""))
+        is_note = self.node_data.get("node_type") == "note"
+
+        if is_note:
+            # 便签:圆角矩形 + 名称 + 备注内容(自动换行,高度随内容自适应)
+            f = QFont(); f.setPointSize(9); f.setBold(True)
+            self._label.setFont(f)
+            self._label.setPos(8, 4)
+            # 前景色:深底用浅字,浅底用深字(保证可读)
+            fg = (QColor(255, 255, 255) if color.lightness() < 128
+                  else QColor(color).darker(260))
+            self._label.setBrush(QBrush(fg))
+            self._label.setText(self.node_data.get("name", ""))
+            tf = QFont(); tf.setPointSize(8)
+            self._note_text.setFont(tf)
+            self._note_text.setPos(8, 20)
+            self._note_text.setDefaultTextColor(fg)
+            doc = self._note_text.document()
+            _opt = QTextOption()
+            _opt.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+            doc.setDefaultTextOption(_opt)
+            self._note_text.setTextWidth(self.NOTE_W - 16)
+            self._note_text.setPlainText(self.node_data.get("description", ""))
+            self._note_text.show()
+            self._note_text.setZValue(2)
+            # 高度随备注内容自适应(最低 NOTE_H,避免文字画出便签外)
+            nh = max(self.NOTE_H, int(self._note_text.boundingRect().height()) + 28)
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(0, 0, self.NOTE_W, nh), 8, 8)
+            self.setPath(path)
+            self.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 235)))
+            self.setPen(QPen(QColor(color).darker(130), 1))
+        else:
+            # 普通节点:圆形
+            path = QPainterPath()
+            path.addEllipse(QRectF(-r, -r, r * 2, r * 2))
+            self.setPath(path)
+            self.setBrush(QBrush(color))
+            self.setPen(QPen(QColor(color).darker(120), 1))
+            fs = self.node_data.get("font_size") or (9 if cfg["size"] >= 10 else 7)
+            italic = self.node_data.get("font_italic", False)
+            f = QFont(); f.setPointSize(int(fs)); f.setItalic(italic)
+            self._label.setFont(f)
+            self._label.setPos(r + 4, -max(r / 2, 4))
+            self._label.setBrush(QBrush(QColor(Color.TEXT)))
+            self._label.setText(self.node_data.get("name", ""))
+            self._note_text.hide()
 
     def itemChange(self, change, value):
         global _REBUILD
@@ -436,6 +477,10 @@ class MapNodeDialog(QDialog):
     def __init__(self, node: Optional[MapNode] = None, parent=None):
         super().__init__(parent)
         self._node = node
+        self._picked_color: Optional[str] = None  # None=跟随类型默认色
+        # 编辑已有自定义颜色的节点时预填(否则保存会清空已存颜色)
+        if self._node and self._node.color:
+            self._picked_color = self._node.color
         self.setWindowTitle("编辑节点" if node else "添加节点")
         self.setMinimumWidth(350)
         lo = QFormLayout(self)
@@ -450,6 +495,27 @@ class MapNodeDialog(QDialog):
             idx = self.type_combo.findData(self._node.node_type)
             if idx >= 0: self.type_combo.setCurrentIndex(idx)
         lo.addRow("类型:", self.type_combo)
+        # 颜色:色块按钮 → 取色器;未手动选色时跟随类型默认色(类型切换自动预览)
+        self.color_btn = QPushButton()
+        self.color_btn.setFixedSize(52, 24)
+        self.color_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.color_btn.clicked.connect(self._pick_color)
+        self.color_btn.setToolTip("点击选择节点与边界颜色")
+        reset_color_btn = QPushButton("默认")
+        # 内联样式覆盖全局 QSS 的大 padding,避免文字被挤压截断(自适应宽度)
+        reset_color_btn.setStyleSheet(
+            f"font-size: 10px; padding: 2px 8px;"
+            f"border: 1px solid {Color.BORDER}; border-radius: 4px;"
+            f"background: {Color.BG_ALT}; color: {Color.TEXT_SECONDARY};")
+        reset_color_btn.setToolTip("恢复为类型默认色")
+        reset_color_btn.clicked.connect(self._reset_color)
+        color_row = QHBoxLayout()
+        color_row.addWidget(self.color_btn)
+        color_row.addWidget(reset_color_btn)
+        color_row.addStretch()
+        lo.addRow("颜色:", color_row)
+        self.type_combo.currentIndexChanged.connect(
+            lambda *_: self._update_color_preview())
         self.desc_edit = QTextEdit()
         self.desc_edit.setMaximumHeight(80)
         if self._node: self.desc_edit.setPlainText(self._node.description)
@@ -457,10 +523,30 @@ class MapNodeDialog(QDialog):
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
         lo.addRow(btns)
+        self._update_color_preview()
+
+    def _pick_color(self):
+        cfg = NODE_TYPE_CONFIG.get(self.type_combo.currentData(), NODE_TYPE_CONFIG["city"])
+        cur = self._picked_color or cfg["color"]
+        col = QColorDialog.getColor(QColor(cur), self, "选择节点颜色")
+        if col.isValid():
+            self._picked_color = col.name()
+            self._update_color_preview()
+
+    def _reset_color(self):
+        self._picked_color = None
+        self._update_color_preview()
+
+    def _update_color_preview(self):
+        cfg = NODE_TYPE_CONFIG.get(self.type_combo.currentData(), NODE_TYPE_CONFIG["city"])
+        col = self._picked_color or cfg["color"]
+        self.color_btn.setStyleSheet(
+            f"background-color: {col}; border: 1px solid {Color.BORDER}; border-radius: 4px;")
 
     def get_data(self):
         return {"name": self.name_edit.text().strip(),
                 "node_type": self.type_combo.currentData(),
+                "color": self._picked_color or "",
                 "description": self.desc_edit.toPlainText().strip()}
 
 
@@ -544,11 +630,11 @@ class MapModule(BaseModule):
         except OSError as e:
             print(f"保存地图失败: {e}")
 
-    def add_node(self, name, node_type="city", x=500.0, y=500.0,
+    def add_node(self, name, node_type="city", x=500.0, y=500.0, color="",
                  parent_id="", description="", boundary=None):
         n = MapNode(id=uuid.uuid4().hex[:12], name=name, node_type=node_type,
-                    x=x, y=y, parent_id=parent_id, description=description,
-                    boundary=boundary or [])
+                    x=x, y=y, color=color, parent_id=parent_id,
+                    description=description, boundary=boundary or [])
         self.nodes.append(n); return n
 
     def delete_node(self, nid):
@@ -622,6 +708,20 @@ class MapDock(QDockWidget):
         self._build_map()
         self._fit_view()
         self.setWindowTitle("地图")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # 每次软件会话首次显示地图时自动适应一次:
+        # 构造时窗口未显示,视口尺寸不准确;等布局完成后重新适应
+        if not getattr(self, '_auto_fit_done', False):
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, self._auto_fit_once)
+
+    def _auto_fit_once(self):
+        """首次显示后的自动适应(回调时仍可见才执行,避免无效视口)。"""
+        if self.isVisible():
+            self._fit_view()
+            self._auto_fit_done = True  # 成功执行后才置位(隐藏时不消费本次机会)
 
     def _setup_ui(self):
         self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea |
@@ -716,6 +816,7 @@ class MapDock(QDockWidget):
                 "_id": n.id, "name": n.name, "node_type": n.node_type,
                 "color": n.color, "x": n.x, "y": n.y,
                 "radius": n.radius, "font_size": n.font_size, "font_italic": n.font_italic,
+                "description": n.description,
             }, on_move=self._on_node_moved)
             item.setPos(n.x, n.y)
             self.scene.addItem(item)
@@ -812,6 +913,7 @@ class MapDock(QDockWidget):
     def _on_node_ctx(self, item):
         nd = item.node_data; nid = nd.get("_id", ""); name = nd.get("name", "")
         m = QMenu(self)
+        ed_a = m.addAction("编辑…")
         rn_a = m.addAction("重命名")
         m.addSeparator()
         r_a = m.addAction(f"半径 ({nd.get('radius') or '自动'})")
@@ -826,7 +928,19 @@ class MapDock(QDockWidget):
         rs_a = m.addAction("重置样式")
         act = m.exec(QCursor.pos())
         if not act: return
-        if act == rn_a:
+        if act == ed_a:
+            # 统一编辑入口:名称/类型/颜色/描述(备注节点在此写备注内容)
+            node = next((x for x in self.module.nodes if x.id == nid), None)
+            if node:
+                d = MapNodeDialog(node)
+                if d.exec() == QDialog.DialogCode.Accepted:
+                    data = d.get_data()
+                    if data["name"]:
+                        self.module.update_node(
+                            nid, name=data["name"], node_type=data["node_type"],
+                            color=data["color"], description=data["description"])
+                        self.module.save(); self._build_map()
+        elif act == rn_a:
             new_name, ok = QInputDialog.getText(self, "重命名节点", "新名称:", text=name)
             if ok and new_name.strip():
                 self.module.update_node(nid, name=new_name.strip())

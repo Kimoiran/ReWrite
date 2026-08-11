@@ -121,6 +121,11 @@ class LauncherWindow(QWidget):
             from ..ui.titlebar import _fix_taskbar_icon
             _fix_taskbar_icon(self)
             self._need_icon_fix = False
+        # 每次显示(启动/从作品返回主页)淡入动画;
+        # expand_from_center 张开时跳过(自驱透明度,避免透明+位移跳变)
+        if not getattr(self, '_skip_fade_in', False):
+            from ..ui.animations import fade_in
+            fade_in(self)
 
     def _setup_ui(self):
         self.setWindowTitle("ReWrite")
@@ -141,8 +146,8 @@ class LauncherWindow(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # 标题栏
-        self.title_bar = TitleBar("ReWrite", self)
+        # 标题栏(带版本号,便于确认运行版本;与 main.py setApplicationVersion 保持一致)
+        self.title_bar = TitleBar("ReWrite v1.2.0", self)
         layout.addWidget(self.title_bar)
         content_widget = QWidget()
         content_widget.setStyleSheet("background: transparent;")
@@ -584,7 +589,11 @@ class LauncherWindow(QWidget):
         try:
             s = self._git.status()
             dirty = "⚠" if s.get("dirty") else ""
-            self.git_status_btn.setText(f"⬆ 推送{dirty}")
+            ahead_n = s.get("ahead", 0)
+            btn = f"⬆ 推送{dirty}"
+            if ahead_n:
+                btn += f" ({ahead_n})"  # 显示未推送提交数(重试推送时可见)
+            self.git_status_btn.setText(btn)
             tooltip = f"提交数: {s['commit_count']} | 未暂存: {s['unstaged']} | 领先: {s['ahead']}"
             if s.get("has_remote"):
                 tooltip += " | 点击提交并推送"
@@ -598,10 +607,16 @@ class LauncherWindow(QWidget):
         if not hasattr(self, '_git') or not self._git.is_repo():
             QMessageBox.information(self, "Git", "工作空间未初始化 Git 仓库")
             return
-        # 检查是否有未提交的更改
+        # 检查是否有未提交的更改或未推送的提交(推送失败后重试也放行)
         s = self._git.status()
-        if not s.get("dirty") and not s.get("staged") and not s.get("unstaged"):
-            QMessageBox.information(self, "Git", "没有需要提交的更改，仓库已是最新")
+        if (not s.get("dirty") and not s.get("staged")
+                and not s.get("unstaged") and s.get("ahead", 0) == 0
+                and not s.get("ahead_unknown")):
+            if s.get("behind", 0) > 0:
+                QMessageBox.information(
+                    self, "Git", "本地没有需要提交的更改，但落后远程，请先拉取")
+            else:
+                QMessageBox.information(self, "Git", "没有需要提交的更改，仓库已是最新")
             return
         from PySide6.QtWidgets import QInputDialog
         msg, ok = QInputDialog.getText(self, "提交说明", "提交消息:",

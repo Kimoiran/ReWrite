@@ -55,6 +55,50 @@ class GetOutlineSkill(Skill):
         return f"大纲共 {total} 条：\n" + "\n".join(lines)
 
 
+class CreateOutlineEntrySkill(Skill):
+    @property
+    def name(self) -> str: return "create_outline_entry"
+    @property
+    def description(self) -> str: return "创建大纲条目(可指定父条目创建子条目)"
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "条目标题"},
+                "parent": {"type": "string", "description": "（可选）父条目名称，用于创建子条目"},
+                "content": {"type": "string", "description": "（可选）条目内容"},
+            },
+            "required": ["title"],
+        }
+    def execute(self, args, work_name=""):
+        work = _work_path(args.get("work", work_name))
+        data = _load(work / "outline.json")
+        entries = data.get("entries", [])
+        title = (args.get("title") or "").strip()
+        if not title:
+            return {"success": False, "error": "title 不能为空"}
+        parent = (args.get("parent") or "").strip()
+        new_entry = {"title": title, "content": args.get("content", ""), "children": []}
+        if parent:
+            p = _find_entry(entries, parent)
+            if not p or not isinstance(p, dict):
+                return {"success": False, "error": f"未找到父条目: {parent}"}
+            p.setdefault("children", []).append(new_entry)
+        else:
+            entries.append(new_entry)
+        _save(work / "outline.json", {"entries": entries})
+        return {"success": True}
+    def summarize(self, result, args=None):
+        a = args or {}
+        if result.get("success"):
+            s = f"✅ 已创建大纲条目「{a.get('title', '')}」"
+            if a.get("parent"):
+                s += f"(父条目「{a['parent']}」)"
+            return s
+        return f"❌ 创建失败: {result.get('error')}"
+
+
 class UpdateOutlineEntrySkill(Skill):
     @property
     def name(self) -> str: return "update_outline_entry"

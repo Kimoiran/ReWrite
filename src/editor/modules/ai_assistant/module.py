@@ -8,16 +8,17 @@ from PySide6.QtWidgets import QDockWidget, QMessageBox
 
 from ..base_module import BaseModule
 from .agent import AIAgent
-from .annotation_manager import AnnotationManager
+from src.editor.annotations.manager import AnnotationManager
 from .orchestrator import AIOrchestrator
 from .rag import RAGEngine
 from .skills.rag_skills import SearchChaptersSkill
 from .undo_stack import AIUndoStack
 from .ui.chat_panel import ChatPanel
-from .ui.annotation_list import AnnotationListPanel
+from src.editor.annotations.panel import AnnotationListPanel
 from .memory_editor import MemoryEditor
 
 from src.settings.ai_config import load_ai_config
+from .providers import _describe_tool  # 模块级:orchestrator 为 None 时的兜底描述(防 NameError)
 
 logger = logging.getLogger("rewrite.ai")
 
@@ -46,6 +47,7 @@ class AIAssistantModule(BaseModule):
         # 本轮对话开始前的快照栈深度(撤回时整轮回滚)
         self._undo_mark = 0
         self._auto_confirm = False
+        self._task_auto = False  # 任务内自动继续:确认一次后,本任务后续写操作直接执行
 
     # ── 生命周期 ──
 
@@ -53,8 +55,17 @@ class AIAssistantModule(BaseModule):
         self.annotation_mgr.load()
         chap_mod = self._get_module("chapters")
         if chap_mod:
-            self._rag.build_index(chap_mod)
+            self._rag.chapter_module = chap_mod
             SearchChaptersSkill.set_engine(self._rag)
+            # 打开作品后延迟构建 RAG 索引,避免阻塞窗口显示;
+            # 搜索技能对未就绪引擎有即时构建兑底
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(1500, self._ensure_rag_ready)
+
+    def _ensure_rag_ready(self):
+        """惰性构建 RAG 索引(延迟构建;首次搜索时技能层还有即时兑底)。"""
+        if not self._rag._ready:
+            self._rag.build_index()
 
     def save(self):
         self.annotation_mgr.save()
@@ -139,12 +150,18 @@ class AIAssistantModule(BaseModule):
         self.chat_panel.undo_requested.connect(self._on_undo)
         self.chat_panel.edit_memory_requested.connect(lambda: MemoryEditor(self.agent, self.chat_panel).exec(self.parent()))
         self.chat_panel.compress_memory_requested.connect(self._on_compress_memory)
+        self.chat_panel.edit_work_prompt_requested.connect(self._on_edit_work_prompt)
+        self.chat_panel.stop_requested.connect(self._on_stop_generation)
         self._init_orchestrator()
         return self.chat_panel
 
     def _make_annotation_dock(self) -> QDockWidget:
         self.annotation_panel = AnnotationListPanel(self.annotation_mgr)
         self.annotation_panel.annotation_clicked.connect(self._on_annotation_clicked)
+        # 状态变更(采纳/忽略/删除)→ 立即刷新正文高亮与边条
+        self.annotation_panel.annotation_accepted.connect(self._on_annotation_status_changed)
+        self.annotation_panel.annotation_ignored.connect(self._on_annotation_status_changed)
+        self.annotation_panel.annotation_deleted.connect(self._on_annotation_status_changed)
         return self.annotation_panel
 
     # ── 记忆操作 ──
@@ -271,33 +288,103 @@ class AIAssistantModule(BaseModule):
     def _on_chat_message(self, message: str, scope: str):
         if not self.agent.is_configured():
             self.chat_panel.add_message("assistant", "请先配置 AI 服务：菜单 -> 文件 -> 设置 -> AI 助手")
-            self.chat_panel.enable_send()
+            self.chat_panel.set_busy(False)
             return
+        # 用户主动发送 = 新意图:清除停止残留标志(停止后新消息应正常发送)
+        self._stopped_flag = False
         # 记录本轮对话开始前的快照深度,撤回时整轮回滚
         self._undo_mark = len(self._undo_stack)
         self._orchestrator.set_work_name(self.work_path.name)
+        self.chat_panel.set_busy(True)  # 锁定发言栏,防止 AI 工作期间重复输入
         self.chat_panel.show_loading()
         QTimer.singleShot(100, lambda: self._do_chat(message, self.get_context(scope)))
 
+    def _on_edit_work_prompt(self):
+        """编辑作品级自定义 AI 提示词(风格/尺度定制,追加到默认提示词后)。"""
+        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QTextEdit,
+                                       QDialogButtonBox)
+        from ....storage.meta import load_meta, save_meta
+        meta = load_meta(self.work_path / "work.json")
+        if meta is None:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(self.parent(), "提示", "作品元数据不存在")
+            return
+        dlg = QDialog(self.parent())
+        dlg.setWindowTitle("作品级 AI 提示词")
+        dlg.setMinimumSize(480, 360)
+        lo = QVBoxLayout(dlg)
+        tip = QLabel(
+            "这段提示词会<b>追加</b>在 AI 的系统提示词末尾,只对本作品生效。\n"
+            "可用来自定义文风、尺度、禁忌等。留空 = 使用默认提示词。")
+        tip.setWordWrap(True)
+        lo.addWidget(tip)
+        edit = QTextEdit()
+        edit.setPlaceholderText("例如:\n- 描写细腻,多用通感与身体细节\n- 允许成人内容,大胆而克制地展开……")
+        edit.setPlainText(meta.ai_system_prompt or "")
+        lo.addWidget(edit, 1)
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lo.addWidget(btns)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            meta.ai_system_prompt = edit.toPlainText().strip()
+            if save_meta(self.work_path / "work.json", meta):
+                self.chat_panel.add_message(
+                    "assistant", "✅ 作品提示词已保存,下一次对话生效")
+            else:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self.parent(), "失败", "保存作品提示词失败")
+
+    def _work_ai_prompt(self) -> str:
+        """读取作品级自定义 AI 提示词(work.json 的 ai_system_prompt)。"""
+        try:
+            from ....storage.meta import load_meta
+            meta = load_meta(self.work_path / "work.json")
+            if meta:
+                return (meta.ai_system_prompt or "").strip()
+        except Exception:
+            pass
+        return ""
+
     def _do_chat(self, message: str, context: str):
         from .worker import StreamingProposalWorker
+        if getattr(self, "_stopped_flag", False):
+            # 该次发送在「停止」窗口内(100ms 延迟)被拦截:不再启动生成
+            self._stopped_flag = False
+            self.chat_panel.hide_loading()
+            self.chat_panel.set_busy(False)
+            return
+        # 新任务开始:复位任务内自动继续(会话级「全部允许」保留)
+        self._task_auto = False
         self._streaming_bubble = None
         self._streaming_text = ""
 
-        self._proposal_worker = StreamingProposalWorker(self.agent, message, context)
-        self._proposal_worker.text_chunk.connect(self._on_stream_chunk)
-        self._proposal_worker.reasoning_chunk.connect(self._set_loading_reasoning)
-        self._proposal_worker.proposals_ready.connect(self._on_tool_proposals)
-        self._proposal_worker.text_response.connect(self._on_ai_response)
-        self._proposal_worker.api_error.connect(self._on_ai_error)
-        self._proposal_worker.start()
+        w = StreamingProposalWorker(
+            self.agent, message, context, extra_system=self._work_ai_prompt())
+        # 信号闭包携带 worker 身份:旧任务延迟到达的信号按代际忽略
+        w.text_chunk.connect(lambda t, w=w: self._on_stream_chunk(w, t))
+        w.reasoning_chunk.connect(lambda t, w=w: self._set_loading_reasoning(w, t))
+        w.proposals_ready.connect(lambda tcs, before, after, system, w=w:
+                                  self._on_tool_proposals(w, tcs, before, after, system))
+        w.text_response.connect(lambda r, w=w: self._on_ai_response(w, r))
+        w.api_error.connect(lambda e, w=w: self._on_ai_error(w, e))
+        w.finished.connect(lambda w=w: self._on_worker_done(w))
+        self._proposal_worker = w
+        w.start()
 
-    def _set_loading_reasoning(self, text: str):
+    def _set_loading_reasoning(self, w, text: str):
+        if self._proposal_worker is not w:
+            return  # 旧任务延迟信号:忽略
         if hasattr(self.chat_panel, '_loading_bubble') and self.chat_panel._loading_bubble:
             self.chat_panel._loading_bubble.set_reasoning(text)
 
-    def _on_stream_chunk(self, text: str):
+    def _on_stream_chunk(self, w, text: str):
         """收到 AI 流式正文片段 → 实时更新聊天气泡。"""
+        if self._proposal_worker is not w and self._loop_worker is not w:
+            return  # 旧任务延迟信号:忽略
+        if getattr(self, "_stopped_flag", False):
+            return  # 停止后忽略残留的流式信号(线程可能已排队多个 chunk)
         self._streaming_text += text
         if self._streaming_bubble is None:
             self._streaming_bubble = self.chat_panel.begin_streaming_message()
@@ -335,25 +422,92 @@ class AIAssistantModule(BaseModule):
         except Exception:
             return None
 
-    def _on_tool_proposals(self, tool_calls, before, after, system):
+    def _on_tool_proposals(self, w, tool_calls, before, after, system):
+        if self._proposal_worker is not w:
+            return  # 旧任务延迟到达的提案:忽略(新任务已开始)
         # 清除流式气泡（工具调用不需要显示中途文本）
         self._streaming_bubble = None
         self._streaming_text = ""
         self._handle_tool_calls(tool_calls, after, system)
 
     def _on_cancel(self):
-        self.chat_panel.enable_send()
+        self.chat_panel.set_busy(False)  # 解锁发言栏
+        self._task_auto = False  # 用户取消:退出任务内自动继续
         logger.info("用户取消工具操作")
+
+    def _on_worker_done(self, w):
+        """后台 worker 线程结束后清理引用(避免 QThread 在运行中被销毁)。"""
+        if self._proposal_worker is w:
+            self._proposal_worker = None
+        if self._loop_worker is w:
+            self._loop_worker = None
+
+    def _on_stop_generation(self):
+        """用户点击「■ 停止」:中断 AI 生成,并保留已发生的内容。
+
+        不因"没跑完"而丢记忆——已生成的部分文本与已执行的工具操作
+        (工具结果消息)都会记入 history 并持久化。
+        """
+        partial = self._streaming_text.strip()
+        recorded = False
+
+        # 1) 记录已生成的部分文本(半截内容也进记忆)
+        try:
+            if partial:
+                self.agent.history.append({"role": "assistant",
+                    "content": f"{partial}\n\n[⏹ 用户停止了生成,以上为已生成的部分内容]"})
+                recorded = True
+            # 2) 记录已执行的工具操作(仅本轮新增的 tail,不含历史副本/系统提示)
+            if self._loop_worker is not None:
+                msgs = getattr(self._loop_worker, "messages", None)
+                start = getattr(self._loop_worker, "_start_len", 0)
+                tail = msgs[start:] if msgs and 0 <= start < len(msgs) else msgs
+                if tail:
+                    self.agent.history.extend(tail)
+                    self._loop_worker.messages = None  # 防陈旧引用被再次记录(重复)
+                    recorded = True
+            if recorded:
+                self.agent._persist()
+        except Exception:
+            logger.exception("停止时记录记忆失败")
+
+        # 3) 停止所有后台 worker(流式读取会在下一数据块处中断)
+        # 引用保留到线程 finished(由 _on_worker_done 清理),避免 QThread 运行中被销毁
+        for w in (self._proposal_worker, self._loop_worker):
+            if w is not None:
+                try:
+                    w.request_stop()
+                except Exception:
+                    pass
+
+        # 4) 状态收尾(与 _on_ai_error 一致),并防止自动续写继续
+        self._stopped_flag = True
+        self.chat_panel.hide_loading()
+        self._streaming_bubble = None
+        self._streaming_text = ""
+        self._task_auto = False
+        self._auto_confirm = False  # 停止 = 终止本任务,自动模式一并退出
+        self.chat_panel.set_busy(False)
+        if partial:
+            self.chat_panel.add_message("assistant",
+                "⏹ 已停止生成。以上内容已保留并记入记忆,已执行的操作可随时「↩ 撤回」。")
+        logger.info("用户停止 AI 生成")
 
     def _handle_tool_calls(self, tool_calls, after, system):
         """统一处理一轮工具调用:读工具立即执行;写工具弹确认(或「全部允许」后直接执行)。"""
         from PySide6.QtWidgets import QApplication as _QA
         from .markdown_render import markdown_to_html
 
+        if getattr(self, "_stopped_flag", False):
+            return  # 停止后忽略延迟到达的提案(可能属于已被停止的任务)
+
         self.chat_panel.hide_loading()
         _QA.processEvents()
 
-        msgs = self._orchestrator.prepare_after_messages(tool_calls, after)
+        if self._orchestrator is not None:
+            msgs = self._orchestrator.prepare_after_messages(tool_calls, after)
+        else:
+            msgs = list(after)
 
         reads, writes = [], []
         for tc in tool_calls:
@@ -375,7 +529,8 @@ class AIAssistantModule(BaseModule):
                 from .skills.registry import execute_skill
                 _ensure_work_args(name, a)
                 result = execute_skill(name, a)
-                desc = self._orchestrator._describe_tool(name, a, result)
+                desc = (self._orchestrator._describe_tool(name, a, result)
+                        if self._orchestrator is not None else _describe_tool(name, a, result))
             msgs.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": desc})
             self.chat_panel.add_message("assistant", markdown_to_html(f"📖 {desc}"))
             _QA.processEvents()
@@ -385,13 +540,15 @@ class AIAssistantModule(BaseModule):
             self._tool_loop(msgs, system)
             return
 
-        if self._auto_confirm:
+        if self._auto_confirm or self._task_auto:
             touched = set()
-            msgs = self._execute_writes(writes, msgs, touched)
+            msgs = self._execute_writes(writes, msgs, touched,
+                                        auto=self._task_auto or self._auto_confirm)
             self._finish_after_writes(msgs, system, touched)
             return
 
-        descs = self._orchestrator.resolve_proposals(writes)
+        descs = self._orchestrator.resolve_proposals(writes) if self._orchestrator is not None \
+            else [(w["function"]["name"], w, f"执行 {w['function']['name']}") for w in writes]
         bubble = self.chat_panel.add_confirm_bubble([d[2] for d in descs], writes)
         bubble.confirmed.connect(lambda tcs: self._on_write_confirmed(tcs, msgs, system))
         bubble.auto_confirmed.connect(lambda tcs: self._on_write_confirmed(tcs, msgs, system, auto=True))
@@ -399,20 +556,29 @@ class AIAssistantModule(BaseModule):
         logger.info(f"工具提案: {len(writes)} 个写操作 → 等待确认")
 
     def _on_write_confirmed(self, tool_calls, msgs, system, auto=False):
+        if getattr(self, "_stopped_flag", False):
+            self.chat_panel.set_busy(False)
+            return  # 用户已停止:确认气泡后续不再执行写操作
         if auto:
             self._auto_confirm = True
+        else:
+            # 确认本次后,本任务内后续写操作自动继续(任务结束或新消息时复位)
+            self._task_auto = True
         touched = set()
-        msgs = self._execute_writes(tool_calls, msgs, touched)
+        msgs = self._execute_writes(tool_calls, msgs, touched, auto=auto)
         self._finish_after_writes(msgs, system, touched)
 
-    def _execute_writes(self, tool_calls, msgs, touched):
-        """执行写工具:先快照文件(供回滚),再执行。返回更新后的 msgs。"""
+    def _execute_writes(self, tool_calls, msgs, touched, auto: bool = False):
+        """执行写工具:先快照文件(供回滚),再执行。返回更新后的 msgs。auto=任务内自动继续。"""
         from PySide6.QtWidgets import QApplication as _QA
         from .markdown_render import markdown_to_html
         from .providers import _ensure_work_args
         from .skills.registry import execute_skill
 
         for tc in tool_calls:
+            if getattr(self, "_stopped_flag", False):
+                logger.info("停止:跳过剩余写操作")
+                break
             name = tc["function"]["name"]
             a = self._parse_tool_args(tc)
             if a is None:
@@ -426,7 +592,7 @@ class AIAssistantModule(BaseModule):
                 if pushed:
                     self._undo_stack.push(name, a, self.work_path)
                 if name == "update_chapter":
-                    result = self._do_chapter_diff(a)
+                    result = self._do_chapter_diff(a, auto=auto)
                 else:
                     result = execute_skill(name, a)
                 if isinstance(result, dict) and result.get("success") is False and pushed:
@@ -435,18 +601,30 @@ class AIAssistantModule(BaseModule):
                 elif pushed and isinstance(result, dict):
                     # 关联实际创建/重命名的文件路径,供撤回精确删除(不误伤手动文件)
                     self._undo_stack.attach_result(result)
-                desc = self._orchestrator._describe_tool(name, a, result)
+                desc = (self._orchestrator._describe_tool(name, a, result)
+                        if self._orchestrator is not None else _describe_tool(name, a, result))
             touched.update(self._module_for_tool(name))
             logger.info(f"工具结果: {name} → success={result.get('success') if isinstance(result, dict) else '?'} "
                         f"error={result.get('error', '') if isinstance(result, dict) else str(result)[:200]}")
             msgs.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": desc})
-            self.chat_panel.add_message("assistant", markdown_to_html(f"✅ {desc}"))
+            prefix = "⚡" if auto else "✅"
+            self.chat_panel.add_message("assistant", markdown_to_html(f"{prefix} {desc}"))
             _QA.processEvents()
         return msgs
-
     def _finish_after_writes(self, msgs, system, touched):
         from PySide6.QtWidgets import QApplication as _QA
         self._refresh_panels(touched)
+        if getattr(self, "_stopped_flag", False):
+            # 停止:已执行的操作记入记忆,不再发起续写
+            try:
+                self.agent.history.extend(msgs)
+                self.agent._persist()
+            except Exception:
+                logger.exception("停止后记录已执行操作失败")
+            self.chat_panel.hide_loading()
+            self.chat_panel.set_busy(False)
+            self._task_auto = False
+            return
         self.chat_panel._scroll_to_bottom()
         self.chat_panel.show_loading()
         # 重置流式状态（tool_loop 会创建新的流式气泡）
@@ -455,12 +633,14 @@ class AIAssistantModule(BaseModule):
         _QA.processEvents()
         self._tool_loop(msgs, system)
 
-    def _do_chapter_diff(self, args: dict) -> dict:
+    def _do_chapter_diff(self, args: dict, auto: bool = False) -> dict:
         """章节修改走 diff 确认。
 
         安全:固定使用当前作品目录(self.work_path),不信任 AI 提供的 work
         参数(防路径穿越);章节匹配限定 .md/.html 后缀。
+        auto=True(任务内自动继续):用户已授权本任务写操作,diff 对话框跳过。
         """
+        from .skills.chapter_skills import normalize_chapter_content
         work = self.work_path
         chapter = str(args.get("chapter", ""))
         cd = work / "chapters"; old_c = ""; tp = None
@@ -475,7 +655,17 @@ class AIAssistantModule(BaseModule):
             except OSError as e:
                 return {"success": False, "error": f"读取章节失败: {e}"}
         new_c = args.get("content", "")
-        cn = str(tp.name) if tp else chapter
+        cn = str(tp.name) if tp else chapter  # diff 对比标识(保留文件名)
+        display_cn = chapter
+        if tp is not None:
+            # 显示名去前缀/扩展名,避免把「0001_第三章.md」泄漏进标题
+            stem = tp.stem
+            display_cn = stem.split("_", 1)[-1] if "_" in stem else stem
+        # 写入前规范化:标题行/段落空行(修复 AI 输出导致的标题粘连与换行消失)
+        fallback = (old_c.splitlines()[0].lstrip("#").strip()
+                    if old_c.strip() and old_c.splitlines()[0].lstrip().startswith("#")
+                    else display_cn)
+        new_c = normalize_chapter_content(new_c, fallback)
         if tp is None:
             # 真实错误:未找到章节(而非误导性的「用户拒绝」),附现有章节名供 AI 自修正
             existing = []
@@ -489,7 +679,9 @@ class AIAssistantModule(BaseModule):
                     pass
             return {"success": False, "error": f"未找到章节: {chapter}",
                     "existing_chapters": existing}
-        if new_c and self._show_diff_dialog(old_c, new_c, cn):
+        if not new_c:
+            return {"success": False, "error": "章节内容为空,请提供 content 参数"}
+        if auto or self._show_diff_dialog(old_c, new_c, cn):
             try:
                 tp.write_text(new_c, encoding="utf-8")
             except OSError as e:
@@ -504,37 +696,56 @@ class AIAssistantModule(BaseModule):
 
         agent_ref = self.agent; module_ref = self; orch = self._orchestrator
 
+        # 用户已点击「停止」:不再发起续写(已执行操作已记录,状态已复位)
+        if getattr(self, "_stopped_flag", False):
+            self._stopped_flag = False
+            self.chat_panel.set_busy(False)
+            return
+
         # 重置流式状态（准备接收续写回复的流式输出）
         self._streaming_bubble = None
         self._streaming_text = ""
 
         w = StreamingLoopWorker(agent_ref, messages, system or "")
+        w._start_len = len(messages)  # 停止时只记录本轮新增的 tail
         self._loop_worker = w
 
         def on_data(data):
-            choice = data.get("choices", [{}])[0]; msg = choice.get("message", {})
-            c = msg.get("content") or ""; tcs = msg.get("tool_calls", [])
-            if not tcs:
-                agent_ref.history.append({"role": "assistant", "content": c})
-                agent_ref._persist()
-                module_ref._on_ai_response(c); return
+            try:
+                if getattr(module_ref, "_stopped_flag", False):
+                    return  # 停止后忽略(worker 停止时 emit 的清理信号)
+                if not data.get("choices"):
+                    return  # 清理信号/无内容(如错误路径 emit 的 finished({}))
+                choice = data.get("choices", [{}])[0]; msg = choice.get("message", {})
+                c = msg.get("content") or ""; tcs = msg.get("tool_calls", [])
+                if not tcs:
+                    agent_ref.history.append({"role": "assistant", "content": c})
+                    agent_ref._persist()
+                    module_ref._on_ai_response(w, c); return
 
-            # 还有工具调用 → 继续循环(读免确认/写确认由 _handle_tool_calls 统一处理)
-            messages.append({"role": "assistant", "content": c,
-                "tool_calls": [{"id": t["id"], "type": "function",
-                                "function": {"name": t["function"]["name"],
-                                             "arguments": t["function"]["arguments"]}}
-                               for t in tcs]})
-            module_ref._handle_tool_calls(tcs, messages, system)
+                # 还有工具调用 → 继续循环(读免确认/写确认由 _handle_tool_calls 统一处理)
+                messages.append({"role": "assistant", "content": c,
+                    "tool_calls": [{"id": t["id"], "type": "function",
+                                    "function": {"name": t["function"]["name"],
+                                                 "arguments": t["function"]["arguments"]}}
+                                   for t in tcs]})
+                module_ref._handle_tool_calls(tcs, messages, system)
+            finally:
+                # 数据已处理(或已停止):清理引用(不能早于 on_data,否则代际校验误判)
+                module_ref._on_worker_done(w)
 
-        w.text_chunk.connect(self._on_stream_chunk)
+        w.text_chunk.connect(lambda t, w=w: self._on_stream_chunk(w, t))
         w.finished.connect(on_data)
-        w.error.connect(self._on_ai_error)
+        w.error.connect(lambda e, w=w: self._on_ai_error(w, e))
         w.start()
 
     # ── 响应处理 ──
 
-    def _on_ai_response(self, response: str):
+    def _on_ai_response(self, w, response: str):
+        if self._proposal_worker is not w and self._loop_worker is not w:
+            return  # 旧任务延迟响应:忽略
+        if getattr(self, "_stopped_flag", False):
+            return  # 停止与完成竞争:以停止为准(已记录部分内容,不再重复记录)
         self.chat_panel.hide_loading()
         # 如果之前有流式气泡，用渲染后的最终内容替换它
         if self._streaming_bubble is not None:
@@ -543,7 +754,7 @@ class AIAssistantModule(BaseModule):
             self._streaming_text = ""
         else:
             self.chat_panel.add_message("assistant", AIOrchestrator.render_message(response))
-        self.chat_panel.enable_send()
+        self.chat_panel.set_busy(False)  # 解锁发言栏
         self.chat_panel.update_memory(len(self.agent.history))
         try:
             if self.agent.history and len(self.agent.history) >= 2:
@@ -553,16 +764,25 @@ class AIAssistantModule(BaseModule):
         except Exception:
             pass
         self.chat_panel._scroll_to_bottom()
-        self._proposal_worker = None
+        if self._proposal_worker is w:
+            self._proposal_worker = None
+        # 任务结束(最终回复,不再调用工具):复位任务内自动继续
+        self._task_auto = False
 
-    def _on_ai_error(self, error_msg: str):
+    def _on_ai_error(self, w, error_msg: str):
+        if self._proposal_worker is not w and self._loop_worker is not w:
+            return  # 旧任务延迟错误:忽略
+        if getattr(self, "_stopped_flag", False):
+            return  # 停止与错误竞争:以停止为准
         self.chat_panel.hide_loading()
         self.chat_panel.add_message("assistant", f"[错误] {error_msg}")
-        self.chat_panel.enable_send()
+        self.chat_panel.set_busy(False)  # 解锁发言栏
         # 清理未完成的流式气泡状态
         self._streaming_bubble = None
         self._streaming_text = ""
-        self._proposal_worker = None
+        self._task_auto = False  # 出错:退出任务内自动继续
+        if self._proposal_worker is w:
+            self._proposal_worker = None
 
     # ── 面板刷新 ──
 
@@ -614,27 +834,49 @@ class AIAssistantModule(BaseModule):
 
     # ── 批注 ──
 
+    def _on_annotation_status_changed(self, ann_id: str):
+        """批注状态变更(采纳/忽略):立即刷新正文高亮与边条。"""
+        win = self.parent()
+        if win is not None and hasattr(win, "_refresh_chapter_annotations"):
+            win._refresh_chapter_annotations()
+
     def _on_annotation_clicked(self, ann_id: str):
+        """双击批注:定位到对应位置(章节批注切换章节并跳转光标;其他模块置前面板)。"""
         for ann in self.annotation_mgr.annotations:
             if ann.id == ann_id:
-                dk = self.parent().docks if hasattr(self.parent(), 'docks') else {}
-                if ann.target_type in dk:
+                win = self.parent()
+                dk = win.docks if hasattr(win, 'docks') else {}
+                if ann.target_type == "chapter":
+                    if hasattr(win, "_load_chapter_content"):
+                        win._load_chapter_content(ann.target_path)
+                    # 章节加载完成后定位光标到批注位置
+                    if self._editor and ann.start_pos >= 0:
+                        doc = self._editor.document()
+                        pos = min(ann.start_pos, max(0, doc.characterCount() - 1))
+                        c = self._editor.textCursor()
+                        c.setPosition(pos)
+                        self._editor.setTextCursor(c)
+                        self._editor.ensureCursorVisible()
+                        self._editor.setFocus()
+                elif ann.target_type in dk:
                     dk[ann.target_type].show(); dk[ann.target_type].raise_()
+                else:
+                    # dock 键为复数(如 characters),单复数归一查找
+                    key = ann.target_type + "s"
+                    dock = dk.get(key)
+                    if dock is not None:
+                        dock.show(); dock.raise_()
                 break
 
     def _create_module_annotations(self, response: str):
+        """解析 AI 回复中的 [ANNOTATION:类型:标题] 标签并创建批注。"""
+        import re as _re
         cm = self._get_module("characters"); om = self._get_module("outline")
         tm = self._get_module("timeline")
         cp = self._editor.current_chapter_path() if self._editor else None
         pl = self._editor.toPlainText() if self._editor else ""
-        def _fp(q, p):
-            i = p.find(q)
-            if i >= 0: return (i, i + len(q))
-            import re as _r2
-            c2 = _r2.sub('[，。！？、；：""''「」【】（）《》]', '', q)
-            pc2 = _r2.sub('[，。！？、；：""''「】）《》]', '', p)
-            i = pc2.find(c2)
-            return (i, i + len(c2)) if i >= 0 else (-1, -1)
+        # 复用独立批注模块的标点容错搜索(坐标映射回原文,消除旧实现字符类笔误)
+        from src.editor.annotations.manager import _find_text as _fp
 
         pat = r'\[ANNOTATION:(\w+):([^\]]+)\]\n?(.*?)\n?\[/ANNOTATION\]'
         ms = _re.findall(pat, response, _re.DOTALL)
@@ -645,26 +887,44 @@ class AIAssistantModule(BaseModule):
             if t == "chapter":
                 tp = cp or ""
                 qs2 = _re.findall(r'\[QUOTE\](.*?)\[/QUOTE\]', tc, _re.DOTALL)
-                if qs2: ht = qs2[0].strip(); sp, ep = _fp(ht, pl)
+                if qs2:
+                    ht = qs2[0].strip()
+                    # 建议文本中剥离 [QUOTE] 标签,只保留实际建议
+                    tc = _re.sub(r'\[QUOTE\].*?\[/QUOTE\]', '', tc,
+                                 flags=_re.DOTALL).strip()
+                    # _find_text 签名为 (plain_text, search_text)
+                    sp, ep = _fp(pl, ht)
             elif t == "character" and cm:
                 def _fc(ns):
                     for n in ns:
-                        if not n.is_group and n.name == ti: return n.id
-                        if n.children: r = _fc(n.children); return r
+                        if not n.is_group and n.name == ti:
+                            return n.id
+                        if n.children:
+                            r = _fc(n.children)
+                            if r:
+                                return r
                     return ""
                 tp = _fc(cm.nodes)
             elif t == "outline" and om:
                 def _fo(ns):
                     for e in ns:
-                        if e.title == ti: return e.id
-                        if e.children: r = _fo(e.children); return r
+                        if e.title == ti:
+                            return e.id
+                        if e.children:
+                            r = _fo(e.children)
+                            if r:
+                                return r
                     return ""
                 tp = _fo(om.entries)
             elif t == "timeline" and tm:
                 def _ft(ns):
                     for e in ns:
-                        if e.title == ti: return e.id
-                        if e.children: r = _ft(e.children); return r
+                        if e.title == ti:
+                            return e.id
+                        if e.children:
+                            r = _ft(e.children)
+                            if r:
+                                return r
                     return ""
                 tp = _ft(tm.events)
             if t in ("chapter","character","outline","timeline"):
@@ -672,10 +932,15 @@ class AIAssistantModule(BaseModule):
                     target_title=ti, suggestion=tc, highlight_text=ht, start_pos=sp, end_pos=ep); ok = True
         if not ok and cp:
             qs = _re.findall(r'\[QUOTE\](.*?)\[/QUOTE\]', response, _re.DOTALL)
-            qt = qs[0].strip() if qs else ""; sp, ep = _fp(qt, pl) if qt else (-1, -1)
+            qt = qs[0].strip() if qs else ""
+            # _find_text 签名为 (plain_text, search_text)
+            sp, ep = _fp(pl, qt) if qt else (-1, -1)
             self.annotation_mgr.add_annotation(target_type="chapter", target_path=cp,
                 target_title="当前章节", suggestion=response[:500], highlight_text=qt, start_pos=sp, end_pos=ep)
-        self.annotation_mgr.save(); self.annotation_panel.refresh()
+        self.annotation_mgr.save()
+        panel = getattr(self, "annotation_panel", None)
+        if panel is not None:
+            panel.refresh()
         if self._editor and cp:
             self._editor.set_annotations(self.annotation_mgr.get_chapter_annotations(cp))
 
@@ -743,10 +1008,14 @@ class AIAssistantModule(BaseModule):
     # ── 分析 ──
 
     def _on_analyze(self):
+        if getattr(self.chat_panel, "_busy", False):
+            return  # AI 工作中:忽略并发任务,防止状态交错
+        self._stopped_flag = False  # 用户主动发起 = 新意图
         if not self.agent.is_configured():
             QMessageBox.information(self.parent(), "提示", "请先配置 AI 服务"); return
         ctx = self.get_context("current_chapter,outline,characters")
         msg = "请从情节、人物、节奏、语言等角度全面分析这章内容，给出具体的改进建议。"
+        self.chat_panel.set_busy(True)
         self.chat_panel.show_loading()
         QTimer.singleShot(100, lambda: self._do_chat(msg, ctx))
 

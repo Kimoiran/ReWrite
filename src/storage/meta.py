@@ -69,6 +69,7 @@ class WorkMeta:
     cloud_enabled: bool = False
     date_era: str = ""  # 时间线纪元名，如「神启」「星历」「帝国历」。空=无纪元
     work_id: str = ""  # UUID 唯一标识，用于目录命名和去重
+    ai_system_prompt: str = ""  # 作品级自定义 AI 系统提示词(追加到默认提示词后,用于风格/尺度定制)
 
     def __post_init__(self):
         if isinstance(self.git, dict):

@@ -47,6 +47,7 @@ class TitleBar(QWidget):
         super().__init__(parent)
         self._pressing = False
         self._drag_start = QPoint()
+        self._press_maximized = False  # 按压时窗口是否处于最大化
         self._maximized = False
         self.setFixedHeight(38)
         self._apply_theme_styles()
@@ -108,18 +109,46 @@ class TitleBar(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             self._pressing = True
             self._drag_start = event.globalPosition().toPoint()
+            self._press_maximized = self.window().isMaximized()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self._pressing and not self._maximized:
-            w = self.window()
-            delta = event.globalPosition().toPoint() - self._drag_start
-            if w.pos().y() + delta.y() <= 0:
-                w.showMaximized()
-                self._maximized = True
-            else:
-                w.move(w.pos() + delta)
-            self._drag_start = event.globalPosition().toPoint()
+        if not self._pressing:
+            super().mouseMoveEvent(event)
+            return
+        w = self.window()
+        gpos = event.globalPosition().toPoint()
+        if self._press_maximized:
+            # 最大化窗口拖动标题栏:还原为窗口化并跟随鼠标(常规体验)
+            w.showNormal()
+            self._press_maximized = False
+            self._maximized = False
+            # 窗口左上角跟随光标,保持标题栏按压点的相对位置(showNormal 后取几何)
+            ratio_x = self._drag_start.x() - w.frameGeometry().left()
+            ratio_y = self._drag_start.y() - w.frameGeometry().top()
+            w.move(gpos.x() - ratio_x, gpos.y() - ratio_y)
+            self._drag_start = gpos
+            super().mouseMoveEvent(event)
+            return
+        delta = gpos - self._drag_start
+        if self._maximized and delta.y() > 0:
+            # 拖到顶部自动最大化后,向下拖动 → 还原窗口化并跟随(常规体验)
+            w.showNormal()
+            self._maximized = False
+            ratio_x = self._drag_start.x() - w.frameGeometry().left()
+            ratio_y = self._drag_start.y() - w.frameGeometry().top()
+            w.move(gpos.x() - ratio_x, gpos.y() - ratio_y)
+            self._drag_start = gpos
+            super().mouseMoveEvent(event)
+            return
+        if w.pos().y() + delta.y() <= 0:
+            # 拖到屏幕顶部:最大化(常规体验)
+            w.showMaximized()
+            self._maximized = True
+            self._press_maximized = False
+        else:
+            w.move(w.pos() + delta)
+        self._drag_start = gpos
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):

@@ -104,6 +104,7 @@ ReWrite 使用**工作空间级 Git 仓库**——所有作品共享一个 `work
 - 树形视图：点击条目显示详情，双击编辑标题，右键添加子级
 - 条目状态：待写 / 写作中 / 已完成
 - 选中条目后在下方详情区编辑大纲内容
+- 编辑/更改条目后子条目保持展开状态，不会自动收起
 
 ### 时间线
 
@@ -138,7 +139,9 @@ ReWrite 使用**工作空间级 Git 仓库**——所有作品共享一个 `work
 | 拖拽边界顶点 | 直接拖白色圆点                                      |
 | 多选顶点     | Shift + 左键逐个点击                                |
 | 删除顶点     | 右键顶点 → 删除                                    |
-| 绘制路线     | 点「⌇ 路线」→ 左键加点（自动吸附节点）→ 右键完成 |
+| 绘制路线     | 点「⌇ 路线」→ 左键加点（自动吸附节点）→ 右键完成 | 
+| 编辑节点     | 右键节点 → 编辑…（名称 / 类型 / 颜色 / 描述）   |
+| 备注节点     | 「+ 节点」时类型选「备注」，便签式多行文本      |
 | 调整节点样式 | 右键节点 → 半径 / 字号 / 斜体                      |
 
 **AI 操作：** 说「帮我把北方王国和边陲小城画在地图上」，AI 自动调用 create_map_node。
@@ -147,13 +150,13 @@ ReWrite 使用**工作空间级 Git 仓库**——所有作品共享一个 `work
 
 **交互方式：** 侧边面板对话，芯片式控制 AI 能读取哪些模块的数据。
 
-**Skill 系统（共 31 个）：**
+**Skill 系统（共 32 个）：**
 
 | 模块      | 技能数 | 技能                                                                                                                |
 | --------- | ------ | ------------------------------------------------------------------------------------------------------------------- |
 | 📖 章节   | 6      | get_chapters, read_chapter, create_chapter, update_chapter, rename_chapter, delete_chapter                          |
 | 👤 人物卡 | 7      | get_character_groups, get_characters, create_character, update_character, delete_character, add_group, delete_group |
-| 📋 大纲   | 3      | get_outline, update_outline_entry, delete_outline_entry                                                             |
+| 📋 大纲   | 4      | get_outline, create_outline_entry, update_outline_entry, delete_outline_entry                                       |
 | 📅 时间线 | 4      | create_timeline_event, get_timeline, update_timeline_event, delete_timeline_event                                   |
 | 🌍 世界观 | 4      | get_worldview, create_worldview_entry, update_worldview_entry, delete_worldview_entry                               |
 | 🗺️ 地图 | 6      | get_map, create_map_node, update_map_node, delete_map_node, create_map_route, delete_map_route                      |
@@ -164,10 +167,13 @@ ReWrite 使用**工作空间级 Git 仓库**——所有作品共享一个 `work
 - **分层读取**：上下文仅显示概览（名称/身份），详细数据通过按需调用 get 工具获取
 - **读操作免确认**：`get_*` / `read_*` / `search_*` 只读操作直接执行；仅写操作弹确认气泡
 - **「全部允许」**：多步操作可一键放行后续所有确认
+- **任务内自动继续**：确认一次写操作后，本任务内后续操作自动执行，无需逐条确认
+- **「■ 停止」**：AI 工作期间可随时中断生成；已生成内容与已执行操作会保留并记入记忆
 - **撤回 = 数据回滚**：AI 写操作前自动快照，点「↩ 撤回」恢复数据并撤回对话
 - **自校验机制**：操作失败时返回现有数据列表，AI 自动修正
+- **作品级提示词**：✨ 指令 →「设置作品提示词…」可为单个作品定制写作风格与尺度
 - **RAG 语义搜索**：说「找出所有描写下雨的段落」，AI 通过 TF-IDF 搜索所有章节找到最相关段落
-- **长期记忆**：对话历史自动持久化，关了再开还记得
+- **长期记忆**：对话历史自动持久化，关了再开还记得；AI 输出中的 HTML 标签写入时自动清理为 Markdown
 - **多供应商**：DeepSeek / Claude / OpenAI，还支持自定义 API URL
 - **Markdown 表格渲染**：AI 输出的表格在聊天框中渲染为 HTML 表格
 

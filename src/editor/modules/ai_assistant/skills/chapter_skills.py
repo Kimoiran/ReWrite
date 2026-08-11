@@ -7,6 +7,97 @@ from .base_skill import Skill
 from ._shared import _work_path, make_chapter_md
 
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+def _strip_html_tags(text: str) -> str:
+    """清理 AI 输出中可能混入的 HTML 标签(工具描述已要求 Markdown,此处兜底):
+    <br>/<p> → 换行;<h1>~<h6> → # 标题;其余标签剥离保留内容。"""
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</?p\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</h([1-6])\s*>", "", text, flags=re.IGNORECASE)  # 闭合标题标签删除
+    text = re.sub(r"<h([1-6])\s*>", lambda m: "#" * int(m.group(1)) + " ",
+                  text, flags=re.IGNORECASE)  # 开标题标签 → Markdown 标题
+    text = _HTML_TAG_RE.sub("", text)
+    return text
+
+
+def normalize_chapter_content(content: str, fallback_title: str = "") -> str:
+    """AI 写入正文前的格式规范化,修复"标题与正文粘连/回车换行消失":
+
+    1. 统一换行符为 \\n;
+    2. 剥离 AI 混入的 HTML 标签(<h1>/<p>/<br> 等);
+    3. 首行不是 # 标题且给出 fallback_title → 补标题行;
+    4. 标题行后强制空行分隔(修复标题与正文连起来);
+    5. 相邻普通段落(非列表/引用/代码块)之间补空行——
+       md 渲染会把单换行合并,AI 用单换行分段会导致"换行消失"。
+    """
+    if content is None:
+        return ""
+    text = str(content).replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return text
+    text = _strip_html_tags(text).strip()
+    if not text:
+        return text
+    lines = text.split("\n")
+
+    # 首行不是标题且可回退 → 补标题行(去 # 前缀防双重标题)
+    if not lines[0].lstrip().startswith("#") and fallback_title.strip():
+        fb = fallback_title.lstrip("#").strip()
+        if fb:
+            lines.insert(0, f"# {fb}")
+            lines.insert(1, "")
+
+    out: list[str] = []
+    prev_blank = True
+    prev_special = False
+    need_blank_after_title = False
+    in_code = False  # 围栏代码块 ``` 状态:块内不做任何段落化/插空行
+    for ln in lines:
+        s = ln.strip()
+        if not s:
+            out.append("")
+            prev_blank = True
+            need_blank_after_title = False  # 已有空行,标题分隔已满足
+            continue
+        if s.startswith("```"):
+            # 围栏代码块:切换状态,内容原样保留(不 strip,保留缩进)
+            in_code = not in_code
+            out.append(ln)
+            prev_blank = False
+            prev_special = True
+            continue
+        if in_code:
+            out.append(ln)  # 代码块内原样输出,绝不插空行
+            prev_blank = False
+            prev_special = True
+            continue
+        if s.startswith("#"):
+            # 标题行:前空行(若相邻)+ 标题 + 延迟补后空行(避免重复)
+            if out and out[-1] != "":
+                out.append("")
+            out.append(s)
+            prev_blank = False
+            need_blank_after_title = True
+            continue
+        special = (s.startswith(("- ", "* ", "> "))
+                   or ln.startswith("    ")  # 缩进块(用原始行判定)
+                   or bool(re.match(r"^\d+[.．、]", s)))  # 有序列表(含两位数)
+        if ln[:1] in (" ", "\t") and prev_special:
+            special = True  # 上一行是列表/引用/缩进块 → 本缩进行是其续行(不拆散列表项)
+        if need_blank_after_title:
+            out.append("")  # 标题与正文之间保证空行
+            need_blank_after_title = False
+            prev_blank = True
+        # 相邻非空行之间补空行;仅"特殊行↔特殊行"(连续列表/引用)保持紧凑
+        if not prev_blank and not (prev_special and special):
+            out.append("")  # 单换行 → 段落分隔
+        out.append(s)
+        prev_blank = False
+        prev_special = special
+    return "\n".join(out).strip() + "\n"
+
+
 class GetChaptersSkill(Skill):
     @property
     def name(self) -> str: return "get_chapters"
@@ -33,7 +124,7 @@ class ReadChapterSkill(Skill):
     @property
     def name(self) -> str: return "read_chapter"
     @property
-    def description(self) -> str: return "读取指定章节的正文内容（HTML）"
+    def description(self) -> str: return "读取指定章节的正文内容(Markdown 纯文本)"
     @property
     def input_schema(self) -> dict:
         return {
@@ -125,14 +216,18 @@ class UpdateChapterSkill(Skill):
     @property
     def name(self) -> str: return "update_chapter"
     @property
-    def description(self) -> str: return "修改指定章节的正文内容（HTML 格式），会弹出 diff 对比确认"
+    def description(self) -> str:
+        return ("修改指定章节的正文内容(Markdown 纯文本:标题用 # 开头,段落间用空行分隔,"
+                "禁止使用任何 HTML 标签)。用户要求写/续写/重写/修改正文时，"
+                "必须调用本工具把正文写入文件——不要在聊天回复中直接输出正文。"
+                "会弹出 diff 对比确认。")
     @property
     def input_schema(self) -> dict:
         return {
             "type": "object",
             "properties": {
                 "chapter": {"type": "string", "description": "章节名（如「第一章」）"},
-                "content": {"type": "string", "description": "新的完整 HTML 内容"},
+                "content": {"type": "string", "description": "新的完整 Markdown 纯文本内容(标题用 # 开头,段落间空行,禁止 HTML 标签)"},
             },
             "required": ["chapter", "content"],
         }
@@ -143,6 +238,8 @@ class UpdateChapterSkill(Skill):
         new_content = args.get("content", "")
         if not chapter or new_content is None:
             return {"success": False, "error": "chapter 与 content 参数不能为空"}
+        if not str(new_content).strip():
+            return {"success": False, "error": "content 内容为空"}
         chapters_dir = work / "chapters"
 
         if not chapters_dir.exists():
@@ -160,6 +257,19 @@ class UpdateChapterSkill(Skill):
             return {"success": False, "error": f"未找到章节: {chapter}"}
 
         # 章节是 Markdown 文本文件,直接写文本(不能用 _save,它会 JSON 序列化损坏内容)
+        # 写入前规范化:标题行/段落空行(修复 AI 输出导致的标题粘连与换行消失)
+        old_text = ""
+        try:
+            old_text = target_path.read_text(encoding="utf-8")
+        except OSError:
+            pass
+        fallback = (old_text.splitlines()[0].lstrip("#").strip()
+                    if old_text.strip() and old_text.splitlines()[0].lstrip().startswith("#")
+                    else display)
+        new_content = normalize_chapter_content(new_content, fallback)
+        if not new_content.strip():
+            # 规范化后为空(如内容只有 <br> 等标签)→ 不写入,避免空章节
+            return {"success": False, "error": "content 规范化后为空(仅含标签/空白),未写入"}
         target_path.write_text(new_content, encoding="utf-8")
         return {"success": True, "chapter": chapter}
 

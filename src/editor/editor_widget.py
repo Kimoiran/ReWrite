@@ -3,7 +3,7 @@
 import re as _re
 
 from PySide6.QtCore import Signal, Qt, QRect
-from PySide6.QtGui import QFont, QTextCursor, QTextCharFormat, QColor
+from PySide6.QtGui import QFont, QTextCursor, QTextCharFormat, QColor, QBrush
 from PySide6.QtWidgets import QTextEdit
 
 from .modules.ai_assistant.markdown_render import markdown_to_html as _md_to_html
@@ -18,6 +18,8 @@ class EditorWidget(QTextEdit):
 
     chapter_modified = Signal()
     content_synced = Signal(str, str)  # (chapter_path, md) 给浮动窗口同步用
+    annotation_requested = Signal(str, str)  # (highlight_text, suggestion) 手动添加批注
+    annotations_changed = Signal()  # 批注集合变化(边条/面板刷新用)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -25,6 +27,7 @@ class EditorWidget(QTextEdit):
         self._current_chapter_path = None
         self._modified = False
         self._annotations = []  # 当前章节的批注列表
+        self._rendered_ranges = []  # 上一轮实际渲染的高亮范围(渲染前清除用)
         self._syncing = False  # 防止同步循环
 
     def _setup_editor(self):
@@ -221,51 +224,117 @@ class EditorWidget(QTextEdit):
         self.blockSignals(False)
         self._syncing = False
 
+    def contextMenuEvent(self, event):
+        """右键菜单(汉化):剪切/复制/粘贴/全选 + 选中文本时「添加批注」。"""
+        from PySide6.QtWidgets import QMenu, QInputDialog, QMessageBox
+        menu = QMenu(self)
+        cut = menu.addAction("剪切")
+        copy = menu.addAction("复制")
+        paste = menu.addAction("粘贴")
+        menu.addSeparator()
+        select_all = menu.addAction("全选")
+        has_sel = self.textCursor().hasSelection()
+        cut.setEnabled(has_sel)
+        copy.setEnabled(has_sel)
+        paste.setEnabled(self.canPaste())
+        add_ann = None
+        if has_sel:
+            menu.addSeparator()
+            add_ann = menu.addAction("📌 添加批注")
+            add_ann.setToolTip("为选中文本添加一条批注(存于 .annotations.json,不修改原文)")
+        chosen = menu.exec(event.globalPos())
+        if chosen is None:
+            return  # 菜单取消(Esc/点外部)
+        if chosen == cut:
+            self.cut()
+        elif chosen == copy:
+            self.copy()
+        elif chosen == paste:
+            self.paste()
+        elif chosen == select_all:
+            self.selectAll()
+        elif chosen == add_ann:
+            sel = self.textCursor().selectedText()
+            if "\u2029" in sel or "\n" in sel:
+                QMessageBox.information(
+                    self, "添加批注",
+                    "请选择同一段落内的文本(跨段选区暂不支持批注)。")
+                return
+            suggestion, ok = QInputDialog.getMultiLineText(
+                self, "添加批注", f"对以下文本的批注:\n「{sel[:60]}」\n\n建议/说明:", "")
+            if ok and suggestion.strip():
+                self.annotation_requested.emit(sel, suggestion.strip())
+
     # ── 批注标注渲染 ──
 
     def set_annotations(self, annotations: list):
         """设置当前章节的批注列表并渲染。"""
         self._annotations = annotations
         self._render_annotations()
+        self.annotations_changed.emit()
 
     def _render_annotations(self):
-        """在正文中渲染批注高亮。"""
-        if not self._annotations:
-            return
-
-        # 获取纯文本，逐个批注打高亮
-        # 注意：QTextEdit 的 setHtml 后光标操作会重置格式，
-        # 所以需要在加载 HTML 后额外走一次
-        cursor = self.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.Start)
-
-        for ann in self._annotations:
-            if ann.target_type != "chapter" or ann.start_pos < 0:
-                continue
-
-            # 在纯文本中定位
+        """在正文中渲染批注高亮(blockSignals 防误标 modified/实时写盘)。"""
+        self.blockSignals(True)
+        try:
             text = self.toPlainText()
-            if ann.start_pos >= len(text):
-                continue
+            # 先清除上一轮批注高亮(范围可能已变化/批注已忽略/删除)。
+            # 仅清除背景/下划线,不触碰用户格式(粗体/标题字号等)
+            for s, e in self._rendered_ranges:
+                if e <= s or s < 0:
+                    continue
+                cur = self.textCursor()
+                cur.setPosition(min(s, len(text)))
+                cur.setPosition(min(e, len(text)), QTextCursor.MoveMode.KeepAnchor)
+                clear_fmt = QTextCharFormat()
+                clear_fmt.setBackground(QBrush(Qt.BrushStyle.NoBrush))
+                clear_fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.NoUnderline)
+                cur.mergeCharFormat(clear_fmt)
+            self._rendered_ranges = []
+            if not self._annotations:
+                return
 
-            start = ann.start_pos
-            end = min(ann.end_pos, len(text)) if ann.end_pos > start else start + len(ann.highlight_text)
-            if end > len(text):
-                end = len(text)
-            if end <= start:
-                continue
+            # 获取纯文本，逐个批注打高亮
+            cursor = self.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
 
-            # 设置高亮格式
-            fmt = QTextCharFormat()
-            fmt.setBackground(_HIGHLIGHT_COLOR)
-            fmt.setUnderlineColor(_UNDERLINE_COLOR)
-            fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline)
-            fmt.setToolTip(ann.suggestion[:200])
+            for ann in self._annotations:
+                if ann.target_type != "chapter" or ann.start_pos < 0:
+                    continue
+                if ann.status == "ignored":
+                    continue  # 已忽略的批注不渲染高亮
 
-            # 定位到起始位置并应用格式
-            cursor.setPosition(start, QTextCursor.MoveOperation.MoveAnchor)
-            cursor.setPosition(end, QTextCursor.MoveOperation.KeepAnchor)
-            cursor.mergeCharFormat(fmt)
+                # 在纯文本中定位
+                if ann.start_pos >= len(text):
+                    continue
+
+                start = ann.start_pos
+                end = min(ann.end_pos, len(text)) if ann.end_pos > start else start + len(ann.highlight_text)
+                if end > len(text):
+                    end = len(text)
+                if end <= start:
+                    continue
+
+                # 设置高亮格式
+                fmt = QTextCharFormat()
+                fmt.setBackground(_HIGHLIGHT_COLOR)
+                fmt.setUnderlineColor(_UNDERLINE_COLOR)
+                fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline)
+                # 悬停提示:状态 + 建议(Word 式悬停查看批注内容)
+                import html as _html
+                status_tag = {"pending": "🟡 待处理", "accepted": "🟢 已采纳",
+                              "ignored": "⚪ 已忽略"}.get(ann.status, "🟡 待处理")
+                # suggestion 转义后进 tooltip,防止 AI 文本按富文本解析注入
+                safe_suggestion = _html.escape(ann.suggestion[:300])
+                fmt.setToolTip(f"📌 {status_tag}\n{safe_suggestion}")
+
+                # 定位到起始位置并应用格式
+                cursor.setPosition(start)  # MoveAnchor 属 MoveMode,setPosition 默认即 MoveAnchor
+                cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+                cursor.mergeCharFormat(fmt)
+                self._rendered_ranges.append((start, end))
+        finally:
+            self.blockSignals(False)
 
     def _find_text_position(self, search_text: str, plain_text: str) -> tuple[int, int]:
         """在纯文本中搜索原文片段，返回 (start, end)。"""
@@ -279,24 +348,6 @@ class EditorWidget(QTextEdit):
         if idx >= 0:
             return (idx, idx + len(clean))
         return (-1, -1)
-
-    def apply_annotation_highlight(self, highlight_text: str, suggestion: str) -> tuple[int, int]:
-        """对原文片段应用高亮，返回 (start, end)。"""
-        start, end = self._find_text_position(highlight_text, self.toPlainText())
-        if start < 0:
-            return (-1, -1)
-
-        fmt = QTextCharFormat()
-        fmt.setBackground(_HIGHLIGHT_COLOR)
-        fmt.setUnderlineColor(_UNDERLINE_COLOR)
-        fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SingleUnderline)
-        fmt.setToolTip(suggestion[:200])
-
-        cursor = self.textCursor()
-        cursor.setPosition(start)
-        cursor.setPosition(end, QTextCursor.MoveOperation.KeepAnchor)
-        cursor.mergeCharFormat(fmt)
-        return (start, end)
 
     # ── 格式化工具 ──
 

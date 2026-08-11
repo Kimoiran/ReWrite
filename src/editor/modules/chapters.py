@@ -200,14 +200,29 @@ class ChapterModule(BaseModule):
         self._dirty = True
 
     def read_chapter(self, path: Path) -> str:
-        """读取章节 HTML 内容。"""
-        if not path.exists():
+        """读取章节 HTML 内容。路径必须位于 chapters/ 目录内(防穿越)。"""
+        try:
+            if not path.is_absolute():
+                path = self.chapters_dir.parent / path  # 相对路径基于作品根
+            p = path.resolve()
+            root = self.chapters_dir.resolve()
+            if not p.is_relative_to(root):
+                return ""
+            if not path.exists():
+                return ""
+            return path.read_text(encoding="utf-8")
+        except OSError:
             return ""
-        return path.read_text(encoding="utf-8")
 
     def write_chapter(self, path: Path, md: str) -> bool:
-        """写入章节。先写临时文件再 rename，保证原子性。"""
+        """写入章节。先写临时文件再 rename，保证原子性。路径必须位于 chapters/ 目录内(防穿越)。"""
         try:
+            if not path.is_absolute():
+                path = self.chapters_dir.parent / path  # 相对路径基于作品根
+            p = path.resolve()
+            root = self.chapters_dir.resolve()
+            if not p.is_relative_to(root):
+                return False
             tmp = path.with_suffix(".tmp")
             tmp.write_text(md, encoding="utf-8")
             tmp.replace(path)

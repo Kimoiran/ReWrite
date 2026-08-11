@@ -172,7 +172,7 @@ class GitManager:
         if not self.is_repo():
             return {"dirty": False, "staged": 0, "unstaged": 0,
                     "commit_count": 0, "ahead": 0, "behind": 0,
-                    "has_remote": False}
+                    "ahead_unknown": False, "has_remote": False}
 
         r = self._run(["git", "status", "--porcelain"])
         lines = [l for l in r.stdout.decode("utf-8", errors="replace").split("\n") if l.strip()]
@@ -189,17 +189,28 @@ class GitManager:
         has_remote = bool(r3.stdout.decode("utf-8", errors="replace").strip())
 
         ahead = behind = 0
+        ahead_unknown = False  # 无法确定领先状态(无 upstream/无 remote-tracking)
         if has_remote:
+            branch = self._current_branch()
+            # upstream 未建立时(如首次推送失败)→ 回退到 origin/<branch> 计算
             r4 = self._run(["git", "rev-list", "--count", "--left-right",
                            "HEAD...@{upstream}"])
+            if r4.returncode != 0 and branch:
+                r4 = self._run(["git", "rev-list", "--count", "--left-right",
+                               f"HEAD...origin/{branch}"])
+            if r4.returncode != 0:
+                # 无 upstream 且无 remote-tracking(旧版本直推 URL 的残留状态):
+                # 领先状态未知,调用方应放行推送,避免误报"无需推送"
+                ahead_unknown = True
             out = r4.stdout.decode("utf-8", errors="replace").strip()
             if out:
-                parts = out.split()
-                for p in parts:
-                    if p.startswith("<"):
-                        behind += int(p[1:])
-                    elif p.startswith(">"):
-                        ahead += int(p[1:])
+                # --count 输出为 "<left>\t<right>":left=HEAD 独有(ahead),
+                # right=upstream 独有(behind);无 < > 符号,按 tab/空格解析
+                parts = out.replace("\t", " ").split()
+                if (len(parts) >= 2
+                        and parts[0].lstrip("-").isdigit()
+                        and parts[1].lstrip("-").isdigit()):
+                    ahead, behind = int(parts[0]), int(parts[1])
 
         return {
             "dirty": len(lines) > 0,
@@ -208,6 +219,7 @@ class GitManager:
             "commit_count": commit_count,
             "ahead": ahead,
             "behind": behind,
+            "ahead_unknown": ahead_unknown,
             "has_remote": has_remote,
         }
 
@@ -226,9 +238,12 @@ class GitManager:
             out = r.stdout.decode("utf-8", errors="replace").strip()
             return True, out or "提交成功"
         err = r.stderr.decode("utf-8", errors="replace").strip()
-        if "nothing to commit" in err or "nothing added" in err:
+        out = r.stdout.decode("utf-8", errors="replace").strip()
+        # git 把 "nothing to commit" 提示输出在 stdout(rc=1),两边都要查
+        if ("nothing to commit" in err or "nothing added" in err
+                or "nothing to commit" in out or "nothing added" in out):
             return True, "没有需要提交的更改"
-        return False, err
+        return False, err or out
 
     def set_remote(self, url: str) -> tuple[bool, str]:
         """设置远程仓库。"""
@@ -251,16 +266,30 @@ class GitManager:
         return name if name else "main"
 
     def push(self) -> tuple[bool, str]:
-        """推送到远程仓库（优先 Token 认证，无 Token 时用系统凭据）。"""
+        """推送到远程仓库(优先 Token 认证,无 Token 时用系统凭据)。
+
+        必须 push 到 remote 名(origin)而非裸 URL:直推 URL 会让 upstream
+        指向假 remote 名,origin/main 的 tracking ref 不更新,导致推送成功后
+        ahead 仍不归零、无法判断"已同步"。Token 通过临时改写 origin URL 注入。
+        """
         if not self.is_repo():
             return False, "不是 Git 仓库"
         url = self.get_remote_url()
         if not url:
             return False, "未配置远程仓库"
         branch = self._current_branch()
-        # Token 有配置 → 嵌入 URL；未配置 → 用 git credential helper
-        push_url = self._remote_with_token(url) if self._token else url
-        r = self._run(["git", "push", "-u", push_url, branch])
+        old_url = None
+        try:
+            if self._token:
+                # 临时注入 token 到 origin URL,推送完成立即恢复
+                r_old = self._run(["git", "remote", "get-url", "origin"])
+                old_url = r_old.stdout.decode("utf-8", errors="replace").strip() or url
+                self._run(["git", "remote", "set-url", "origin",
+                           self._remote_with_token(url)])
+            r = self._run(["git", "push", "-u", "origin", branch])
+        finally:
+            if old_url is not None:
+                self._run(["git", "remote", "set-url", "origin", old_url])
         if r.returncode == 0:
             out = r.stdout.decode("utf-8", errors="replace").strip()
             return True, out or "推送成功"
@@ -270,7 +299,11 @@ class GitManager:
         return False, err[:200]
 
     def commit_and_push(self, message: str = "") -> tuple[bool, str]:
-        """一键提交并推送。"""
+        """一键提交并推送。
+
+        工作区无新更改(如推送失败后重试)时 commit 空转不中止——只要本地
+        有 ahead 提交就继续推送,避免"推送失败后无法重新推送"的卡死。
+        """
         ok, msg = self.add_all()
         if not ok:
             return False, f"暂存失败: {msg}"

@@ -4,14 +4,14 @@
 # AI 的核心工作是「用函数调用来操作数据」，不是「写文章描述数据」
 
 SKILL_MAP = """
-工具列表（共 30 个）：
+工具列表（共 32 个）：
 
 📖 章节
   - get_chapters / read_chapter / create_chapter / update_chapter / rename_chapter / delete_chapter
 👤 人物卡
   - get_character_groups / get_characters / create_character / update_character / delete_character / add_group / delete_group
 📋 大纲
-  - get_outline / update_outline_entry / delete_outline_entry
+  - get_outline / create_outline_entry / update_outline_entry / delete_outline_entry
 📅 时间线
   - create_timeline_event / get_timeline / update_timeline_event / delete_timeline_event
 🌍 世界观
@@ -40,6 +40,10 @@ work 参数由系统自动注入。
 - 禁止说「我先做A再做B」→ 直接调工具
 - 禁止说「以下是完整内容」→ 用工具写入
 - 禁止在没有调工具时说「✅已完成」「已修改」→ 没调工具 = 没做事
+- 用户要求「写/续写/重写/修改正文」→ 必须调用 update_chapter，把完整正文放进 content 参数；
+  聊天回复只放 1-2 句简短说明，禁止把大段正文直接贴在聊天里
+- 用户要求「写/续写/重写章节全文」而章节不存在 → 先 create_chapter 再 update_chapter
+- 用户要求创建人物/设定/事件 → 必须用对应的 create_ 工具，回复里同样只放说明
 - 函数名必须完全精确，不能合并单词
 - 如果提示词与上下文数据冲突，以工具返回的实际数据为准
 - 不要只依赖系统提示词中的示例——以工具返回的真实数据为准
