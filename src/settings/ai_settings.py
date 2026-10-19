@@ -102,15 +102,17 @@ class AISettingsPage(QWidget):
         layout.addWidget(ctx_group)
 
         # ── 系统提示词 ──
-        prompt_group = QGroupBox("系统提示词（可选）")
+        prompt_group = QGroupBox("自定义系统提示词（可选）")
         prompt_layout = QVBoxLayout(prompt_group)
 
         self.prompt_edit = QPlainTextEdit()
         self.prompt_edit.setPlaceholderText(
-            "自定义 AI 的行为提示词。留空使用默认提示词。"
+            "自定义 AI 的行为提示词,追加在工具调用规则之后。\n"
+            "留空使用内置默认提示词。\n"
+            "注意:工具调用铁律为硬编码,始终生效,无法被覆盖。"
         )
         self.prompt_edit.setPlainText(self.config.get("system_prompt", ""))
-        self.prompt_edit.setMaximumHeight(100)
+        self.prompt_edit.setMaximumHeight(120)
         prompt_layout.addWidget(self.prompt_edit)
 
         layout.addWidget(prompt_group)

@@ -1,7 +1,7 @@
 """AI Agent — 对话历史持久化，跨会话记忆。"""
 
 from .providers import create_provider
-from .prompt_templates import DEFAULT_SYSTEM_PROMPT
+from .prompt_templates import build_system_prompt
 from src.settings.ai_config import load_chat_history, save_chat_history
 
 
@@ -13,6 +13,9 @@ class AIAgent:
         self.work_name = work_name
         self._provider = None
         self.history: list[dict] = []
+        # 本作品启用的模块集合（由 AIAssistantModule 按 work.json 注入）。
+        # None = 不做限制（全局/测试场景）。
+        self.enabled_modules = None
 
         # 加载历史记忆
         if work_name:
@@ -42,20 +45,53 @@ class AIAgent:
         return self.config.get("model", "")
 
     def _compress(self):
-        """压缩过长的历史记忆（保留最近 30 条，旧消息合并为摘要）。"""
+        """压缩过长的历史记忆（保留最近 30 条，旧消息合并为摘要）。
+
+        两个关键规则：
+
+        1. **摘要前剥离思考过程**——推理常常比正文还长，混进摘要会把真正的
+           信息挤掉，让「记忆」越压越糊涂。
+        2. **保留最早的那条用户消息**（任务原点：字数/篇幅/风格要求），
+           否则连续写很多章之后，「每章 5000 字」会被摘要吞掉。
+        """
         if len(self.history) <= 80:
             return
+        from .providers import strip_reasoning
+
         keep = self.history[-30:]
         older = self.history[:-30]
+
         summary_parts = []
         for msg in older:
-            role = "用户" if msg["role"] == "user" else "AI"
+            role = "用户" if msg.get("role") == "user" else "AI"
             c = msg.get("content", "")
             if isinstance(c, list):
                 c = " ".join(str(x) for x in c[:5])
-            summary_parts.append(f"{role}: {str(c)[:200]}")
-        summary = {"role": "user", "content": "--- 历史对话摘要 ---\n" + "\n".join(summary_parts[-20:])}
-        self.history = [summary] + keep
+            c = strip_reasoning(str(c)).strip()
+            if not c:
+                continue                      # 纯思考过程的消息不进摘要
+            summary_parts.append(f"{role}: {c[:200]}")
+
+        summary = {"role": "user",
+                   "content": "--- 历史对话摘要 ---\n" + "\n".join(summary_parts[-20:])}
+
+        # 任务原点：最早的一条真实用户指令（排除上一轮的摘要块）
+        origin = next(
+            (m for m in older
+             if m.get("role") == "user"
+             and not str(m.get("content", "")).startswith("--- 历史对话摘要 ---")
+             and strip_reasoning(str(m.get("content", ""))).strip()),
+            None,
+        )
+
+        new_history = [summary]
+        if origin is not None:
+            new_history.append({
+                "role": "user",
+                "content": "（本次任务最开始的原始要求，长期有效）\n"
+                           + strip_reasoning(str(origin["content"]))[:600],
+            })
+        self.history = new_history + keep
 
     def _persist(self):
         """保存当前历史到磁盘（自动触发压缩）。"""
@@ -72,7 +108,8 @@ class AIAgent:
 
         provider = self._get_provider()
 
-        system = self.config.get("system_prompt", "") or DEFAULT_SYSTEM_PROMPT
+        # 工具铁律为硬编码(见 build_system_prompt),自定义提示词只能追加其后
+        system = build_system_prompt(self.config, self.enabled_modules)
         if current_context:
             system = f"{system}\n\n## 当前作品上下文\n{current_context}"
 

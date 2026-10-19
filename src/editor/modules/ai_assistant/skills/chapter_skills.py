@@ -4,7 +4,9 @@ import re
 from typing import Any
 
 from .base_skill import Skill
-from ._shared import _work_path, make_chapter_md
+from ._shared import (_work_path, make_chapter_md, chapter_display_name,
+                      list_chapter_files, list_chapter_names,
+                      resolve_chapter_file)
 
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
@@ -108,13 +110,11 @@ class GetChaptersSkill(Skill):
         return {"type": "object", "properties": {}, "required": []}
     def execute(self, args, work_name=""):
         work = _work_path(args.get("work", work_name))
-        chapters_dir = work / "chapters"
-        chapters = []
-        if chapters_dir.exists():
-            for f in sorted(chapters_dir.iterdir()):
-                if f.suffix.lower() in (".md", ".html") and not f.name.startswith("."):
-                    chapters.append({"name": f.stem, "path": str(f.relative_to(work)),
-                                     "size": f.stat().st_size, "format": f.suffix.lower().lstrip(".")})
+        chapters = [
+            {"name": chapter_display_name(f), "path": str(f.relative_to(work)),
+             "size": f.stat().st_size, "format": f.suffix.lower().lstrip(".")}
+            for f in list_chapter_files(work / "chapters")
+        ]
         return {"chapters": chapters}
     def summarize(self, result, args=None):
         return "已读取章节列表"
@@ -138,14 +138,18 @@ class ReadChapterSkill(Skill):
         work = _work_path(args.get("work", work_name))
         chapter = args.get("chapter", "")
         chapters_dir = work / "chapters"
-        if chapters_dir.exists():
-            for f in chapters_dir.iterdir():
-                name = f.stem
-                # 匹配: 0001_第一章 → 第一章 / 第一章
-                display = name.split("_", 1)[-1] if "_" in name else name
-                if display == chapter or name == chapter:
-                    return {"content": f.read_text(encoding="utf-8"), "path": str(f.relative_to(work))}
-        return {"success": False, "error": f"未找到章节: {chapter}"}
+        target = resolve_chapter_file(chapters_dir, chapter)
+        if target is not None:
+            try:
+                return {"success": True,
+                        "content": target.read_text(encoding="utf-8"),
+                        "path": str(target.relative_to(work)),
+                        "chapter": chapter_display_name(target)}
+            except OSError as e:
+                return {"success": False, "error": f"读取章节失败: {e}"}
+        # 未命中时回传现有章节名，让 AI 自己改正（而不是去「搜」）
+        return {"success": False, "error": f"未找到章节: {chapter}",
+                "existing_chapters": list_chapter_names(chapters_dir)}
     def summarize(self, result, args=None):
         c = (args or {}).get("chapter", "")
         if "content" in result:
@@ -245,16 +249,12 @@ class UpdateChapterSkill(Skill):
         if not chapters_dir.exists():
             return {"success": False, "error": "chapters 目录不存在"}
 
-        target_path = None
-        for f in chapters_dir.iterdir():
-            name = f.stem
-            display = name.split("_", 1)[-1] if "_" in name else name
-            if display == chapter or name == chapter:
-                target_path = f
-                break
+        target_path = resolve_chapter_file(chapters_dir, chapter)
+        if target_path is None:
+            return {"success": False, "error": f"未找到章节: {chapter}",
+                    "existing_chapters": list_chapter_names(chapters_dir)}
 
-        if not target_path:
-            return {"success": False, "error": f"未找到章节: {chapter}"}
+        display = chapter_display_name(target_path)
 
         # 章节是 Markdown 文本文件,直接写文本(不能用 _save,它会 JSON 序列化损坏内容)
         # 写入前规范化:标题行/段落空行(修复 AI 输出导致的标题粘连与换行消失)
@@ -305,15 +305,10 @@ class RenameChapterSkill(Skill):
         if not chapters_dir.exists():
             return {"success": False, "error": "chapters 目录不存在"}
 
-        target = None
-        for f in chapters_dir.iterdir():
-            display = f.stem.split("_", 1)[-1] if "_" in f.stem else f.stem
-            if display == chapter or f.stem == chapter:
-                target = f
-                break
-
-        if not target:
-            return {"success": False, "error": f"未找到章节: {chapter}"}
+        target = resolve_chapter_file(chapters_dir, chapter)
+        if target is None:
+            return {"success": False, "error": f"未找到章节: {chapter}",
+                    "existing_chapters": list_chapter_names(chapters_dir)}
 
         # 保留序号与原后缀(避免 .md 章节被改写成 .html 造成格式漂移)
         order = target.stem.split("_", 1)[0] if "_" in target.stem else ""
@@ -358,15 +353,10 @@ class DeleteChapterSkill(Skill):
         if not chapters_dir.exists():
             return {"success": False, "error": "chapters 目录不存在"}
 
-        target = None
-        for f in chapters_dir.iterdir():
-            display = f.stem.split("_", 1)[-1] if "_" in f.stem else f.stem
-            if display == chapter or f.stem == chapter:
-                target = f
-                break
-
-        if not target:
-            return {"success": False, "error": f"未找到章节: {chapter}"}
+        target = resolve_chapter_file(chapters_dir, chapter)
+        if target is None:
+            return {"success": False, "error": f"未找到章节: {chapter}",
+                    "existing_chapters": list_chapter_names(chapters_dir)}
 
         _os.remove(str(target))
         return {"success": True, "name": chapter}

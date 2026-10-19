@@ -9,7 +9,10 @@ from PySide6.QtWidgets import QDockWidget
 
 from .base_module import BaseModule
 from ...utils.stats import count_words
+from ...utils.logging_setup import get_logger
 from .ai_assistant.skills._shared import make_chapter_md
+
+log = get_logger(__name__)
 
 
 @dataclass
@@ -52,7 +55,7 @@ class ChapterModule(BaseModule):
                         if info:
                             self._chapters.append(info)
                 except Exception:
-                    pass
+                    log.exception("迁移旧 HTML 章节失败 %s", f)
             elif suffix == ".md":
                 info = self._parse_filename(f)
                 if info:
@@ -233,7 +236,7 @@ class ChapterModule(BaseModule):
             self._dirty = True
             return True
         except OSError as e:
-            print(f"写入章节失败: {e}")
+            log.error("写入章节失败 %s: %s", path, e)
             return False
 
     def save(self):

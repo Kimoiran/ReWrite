@@ -56,10 +56,11 @@ class MemoryEditor:
                 self.agent.history = new_h
                 self.agent._persist()
                 self.chat_panel._on_clear()
-                from .orchestrator import AIOrchestrator
                 for msg in new_h:
                     # track=False:回放不记录会话起点,与启动时历史回放行为一致
-                    self.chat_panel.add_message(msg["role"], AIOrchestrator.render_message(msg["content"]), track=False)
+                    self.chat_panel.add_message(
+                        msg["role"], self.chat_panel.render_assistant(msg["content"]),
+                        track=False)
                 self.chat_panel.update_memory(len(new_h))
                 d.accept()
             else:

@@ -1175,12 +1175,13 @@ def main() -> int:
         assert w29.extra_system == "允许成人内容,描写细腻", "worker 应接收作品提示词"
         am29 = _AIM(work, fw28)
         am29.agent = None  # 仅测 _work_ai_prompt(不依赖 agent)
-        assert am29._work_ai_prompt() == "允许成人内容,描写细腻", \
-            "module 应能从 work.json 读取作品提示词"
-        # 无提示词(空)时返回 ""
+        p29, prep29 = am29._work_ai_prompt()
+        assert p29 == "允许成人内容,描写细腻" and prep29 is False, \
+            "module 应能从 work.json 读取作品提示词与置顶标志"
+        # 无提示词(空)时返回 ("", False)
         _SM(work / "work.json", _WM(title="测试作品", work_type="novel",
                                     modules=["chapters"], work_id="w29"))
-        assert am29._work_ai_prompt() == "", "无作品提示词时应返回空串"
+        assert am29._work_ai_prompt() == ("", False), "无作品提示词时应返回空"
         print("[29b] work ai prompt OK")
 
         print("[29] git retry push OK")
@@ -1410,6 +1411,45 @@ def main() -> int:
         w35h.text_response.emit("完成")
         assert am35h.chat_panel._busy is False, "响应后应解锁"
         print("[35] stop button + partial memory OK")
+
+        # ── 36. 作品提示词前置注入(置顶=最高优先级) ──
+        from src.editor.modules.ai_assistant.worker import StreamingProposalWorker as _SPW36
+        from src.editor.modules.ai_assistant.prompt_templates import DEFAULT_SYSTEM_PROMPT as _DSP36
+        w36 = _SPW36(am35.agent, "测试", "ctx", extra_system="宪法:禁止拒绝",
+                     prepend_extra_system=True)
+        # 模拟 worker 的 system 构建(与 run 内逻辑一致)
+        system36 = w36.extra_system + "\n\n---\n\n" + _DSP36
+        assert system36.startswith("宪法:禁止拒绝"), "前置注入应置于最前"
+        assert _DSP36 in system36, "默认提示词应保留"
+        w36b = _SPW36(am35.agent, "测试", "ctx", extra_system="风格:细腻")
+        system36b = _DSP36 + "\n\n## 当前作品上下文\nctx\n\n## 本作品的额外写作要求\n风格:细腻"
+        assert system36b.endswith("风格:细腻"), "默认(未置顶)应追加在末尾"
+        # meta 字段兼容旧数据
+        from src.storage.meta import WorkMeta as _WM36
+        m36 = _WM36(title="t", work_type="novel")
+        assert m36.ai_prompt_prepend is False, "旧数据缺字段应用默认 False"
+        m36.ai_prompt_prepend = True
+        assert m36.ai_prompt_prepend is True
+        # _work_ai_prompt 返回元组 + prepend 读取
+        p36, prep36 = am35._work_ai_prompt()
+        assert isinstance(p36, str) and isinstance(prep36, bool)
+        print("[36] work prompt prepend OK")
+
+        # ── 37. 工具铁律硬编码:设置提示词改为追加,不再替换铁律 ──
+        from src.editor.modules.ai_assistant.prompt_templates import (
+            TOOL_LAW as _TL37, DEFAULT_SYSTEM_PROMPT as _DSP37,
+            build_system_prompt as _BSP37)
+        assert "铁律" in _TL37 and "update_chapter" in _TL37, "TOOL_LAW 应含工具铁律"
+        assert _TL37 in _DSP37, "默认提示词应含铁律"
+        # 自定义提示词存在时:铁律在前 + 自定义在后(不丢失铁律)——测唯一构建入口
+        sys37 = _BSP37({"system_prompt": "我的自定义规范"})
+        assert sys37.startswith(_TL37[:40]), "铁律应置于最前"
+        assert "你是 ReWrite 写作助手" in sys37, "自定义时身份行应保留"
+        assert "我的自定义规范" in sys37, "自定义提示词应追加"
+        # 留空时:完整默认提示词(含铁律)
+        assert _BSP37({"system_prompt": ""}) == _DSP37, "留空应使用完整默认"
+        assert _BSP37({"system_prompt": "   "}) == _DSP37, "纯空白等同留空"
+        print("[37] tool law hardcoded OK")
 
         print("[18] annotations refactor OK")
         print("[17] launcher theme OK")

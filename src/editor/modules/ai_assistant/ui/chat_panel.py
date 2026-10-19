@@ -1,5 +1,7 @@
 """AI 对话面板 — 聊天式交互界面。"""
 
+import html as _html
+
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -10,6 +12,26 @@ from PySide6.QtWidgets import (
 )
 
 from src.ui.theme import Color
+
+
+# 思考过程在气泡里最多保留这么多字符（超出只留尾部），避免超长推理把界面撑爆
+_MAX_REASONING_CHARS = 8000
+
+
+def merge_reasoning_text(current: str, chunk: str,
+                         limit: int = _MAX_REASONING_CHARS) -> str:
+    """把流式推理片段并入已显示文本（超长只留尾部）。
+
+    旧实现是 ``setText(f"🧠 {current}{chunk}")``：每来一个片段都重新拼一次
+    「大脑图标 + 已有全文」，于是屏幕堆出成百上千个 🧠。这里只做纯文本拼接，
+    图标交给固定的标题标签，只会出现一次。
+    """
+    if not chunk:
+        return current or ""
+    merged = f"{current or ''}{chunk}"
+    if len(merged) > limit:
+        merged = "…（前段略）\n" + merged[-limit:]
+    return merged
 
 
 class MessageBubble(QFrame):
@@ -58,16 +80,32 @@ class MessageBubble(QFrame):
     def set_content(self, html: str):
         self.browser.setHtml(html)
         QTimer.singleShot(10, self._resize_to_content)
+        QTimer.singleShot(90, self._resize_to_content)   # 布局稳定后再校一次
 
     def _resize_to_content(self):
-        """根据实际宽度重新计算气泡高度。"""
+        """按内容真实高度收紧气泡。
+
+        旧实现只用 ``setMinimumHeight``：内容变短时（流式占位的「…」被最终正文替换、
+        或思考块被移除）高度收不回来，气泡底部就留出一大片空白。
+        改用 ``setFixedHeight``，并记录已应用尺寸，避免 resize 事件递归。
+        """
         w = self.browser.viewport().width()
         if w < 50:
-            w = 480
+            return                       # 尚未布局完成，等下一次
         doc = self.browser.document()
         doc.setTextWidth(w)
-        h = int(doc.size().height()) + 16
-        self.browser.setMinimumHeight(max(40, h))
+        h = max(40, int(doc.size().height()) + 18)
+        if getattr(self, "_applied_size", None) == (w, h):
+            return
+        self._applied_size = (w, h)
+        self.browser.setFixedHeight(h)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        w = self.browser.viewport().width()
+        applied_w = getattr(self, "_applied_size", (0, 0))[0]
+        if w > 50 and abs(w - applied_w) > 2:
+            QTimer.singleShot(0, self._resize_to_content)
 
 
 class LoadingBubble(QFrame):
@@ -98,6 +136,13 @@ class LoadingBubble(QFrame):
         layout.addWidget(self.dots_label)
 
         # 推理过程显示区（可滚动，默认隐藏）
+        self.reasoning_header = QLabel("🧠 思考过程")
+        self.reasoning_header.setStyleSheet(
+            f"QLabel {{ font-size: 11px; font-weight: 700; color: {Color.WARNING_TEXT};"
+            f" background: transparent; border: none; padding: 2px 2px 0 2px; }}")
+        self.reasoning_header.setVisible(False)
+        layout.addWidget(self.reasoning_header)
+
         self.reasoning_scroll = QScrollArea()
         self.reasoning_scroll.setWidgetResizable(True)
         self.reasoning_scroll.setMaximumHeight(400)
@@ -141,14 +186,33 @@ class LoadingBubble(QFrame):
         self._timer.stop()
 
     def set_reasoning(self, text: str):
-        """显示 AI 的推理过程。"""
-        if text.strip():
-            current = self.reasoning_content.text()
-            # 增量追加，避免截断
-            self.reasoning_content.setText(f"🧠 {current}{text}")
-            self.reasoning_scroll.setVisible(True)
-        else:
+        """增量显示 AI 的推理过程。
+
+        旧实现写成 ``setText(f"🧠 {current}{text}")``：每来一个流式片段，
+        就把「🧠 + 已有全文」重新拼一次，于是屏幕上堆出成百上千个大脑图标。
+        现在标题只在头部出现一次，正文按增量追加，并自动滚到最后一行。
+        """
+        if not text or not text.strip():
             self.reasoning_scroll.setVisible(False)
+            self.reasoning_header.setVisible(False)
+            return
+        current = self.reasoning_content.text()
+        self.reasoning_content.setText(merge_reasoning_text(current, text))
+        self.reasoning_header.setVisible(True)
+        self.reasoning_scroll.setVisible(True)
+        # 让最新的思考内容始终可见
+        sb = self.reasoning_scroll.verticalScrollBar()
+        QTimer.singleShot(0, lambda: sb.setValue(sb.maximum()))
+
+    def clear_reasoning(self):
+        self.reasoning_content.setText("")
+        self.reasoning_scroll.setVisible(False)
+        self.reasoning_header.setVisible(False)
+
+    @property
+    def reasoning_text(self) -> str:
+        """当前累计的推理文本（供结束时并入消息，便于回看）。"""
+        return self.reasoning_content.text()
 
     def _tick(self):
         self._dot_count = (self._dot_count % 3) + 1
@@ -421,6 +485,9 @@ class ChatPanel(QDockWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        # 显式持有消息区引用：以前用 findChild(QScrollArea) 查找，
+        # 会先命中「思考过程」里那个滚动区，导致自动贴底滚错了控件。
+        self.messages_scroll = scroll
         self.messages_widget = QWidget()
         self.messages_layout = QVBoxLayout(self.messages_widget)
         self.messages_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -551,20 +618,30 @@ class ChatPanel(QDockWidget):
         else:
             self.mem_menu_btn.setText("🧠 记忆")
 
-    def _scroll_to_bottom(self):
-        """滚动消息区域到底部（延迟版本，用于一次性添加消息）。"""
-        scroll_area = self.findChild(QScrollArea)
-        if scroll_area:
-            sb = scroll_area.verticalScrollBar()
-            QTimer.singleShot(100, lambda: sb.setValue(sb.maximum()))
+    def _messages_vbar(self):
+        """消息区的垂直滚动条（找不到时退回旧行为）。"""
+        scroll_area = getattr(self, "messages_scroll", None) or self.findChild(QScrollArea)
+        return scroll_area.verticalScrollBar() if scroll_area else None
+
+    def _stick_to_bottom(self):
+        """把消息区贴到底部（内部函数，可安全重复调用）。"""
+        sb = self._messages_vbar()
+        if sb is not None:
+            sb.setValue(sb.maximum())
+
+    def _scroll_to_bottom(self, _delay: int = 0):
+        """滚动消息区域到底部。
+
+        两段式：立刻一次 + 120ms 后再一次。内容高度在流式更新/气泡移除后
+        会异步变化，只滚一次常常停在旧的最大值上，表现为「下面一大片空白」。
+        """
+        QTimer.singleShot(_delay, self._stick_to_bottom)
+        QTimer.singleShot(_delay + 120, self._stick_to_bottom)
 
     def _scroll_to_bottom_now(self):
         """立即滚动到底部（用于流式更新，先处理待布局再滚）。"""
-        scroll_area = self.findChild(QScrollArea)
-        if scroll_area:
-            sb = scroll_area.verticalScrollBar()
-            QApplication.processEvents()
-            sb.setValue(sb.maximum())
+        QApplication.processEvents()
+        self._stick_to_bottom()
 
     def remove_session(self):
         """删除从最近一次用户消息起的全部气泡(用于撤回),保留更早的对话。"""
@@ -577,6 +654,30 @@ class ChatPanel(QDockWidget):
                 if item and item.widget():
                     item.widget().deleteLater()
         self._session_first_bubble = None
+
+    @staticmethod
+    def _reasoning_block_html(reasoning: str) -> str:
+        """思考过程的展示块（主题色，深色主题下不会变成白块）。"""
+        esc = _html.escape(reasoning or "").replace("\n", "<br>")
+        return (
+            f"<div style='font-size:11px;line-height:1.45;color:{Color.TEXT_HINT};"
+            f"padding:6px 10px;background:{Color.WARNING_BG};"
+            f"border-left:3px solid {Color.WARNING_BORDER};border-radius:4px;"
+            f"margin-bottom:8px;'><b>🧠 思考过程</b><br>{esc}</div>"
+        )
+
+    def render_assistant(self, text: str) -> str:
+        """把 AI 回复渲染成 HTML：主题色思考块 + 正文。
+
+        - 思考过程**保留显示**（用户随时能回看推理）；
+        - 但它不会进入上下文：发回模型前由 ``providers.sanitize_messages`` 剥离。
+        """
+        from ..orchestrator import AIOrchestrator
+        from ..markdown_render import markdown_to_html
+
+        reasoning, body = AIOrchestrator.split_reasoning(text or "")
+        html = markdown_to_html(body)
+        return self._reasoning_block_html(reasoning) + html if reasoning else html
 
     def add_message(self, role: str, content: str, track: bool = True) -> MessageBubble:
         """添加消息气泡。track=False 用于历史回放(不记录会话起点,避免撤回误清全部历史)。"""
@@ -596,10 +697,12 @@ class ChatPanel(QDockWidget):
         self._scroll_to_bottom()
         return bubble
 
-    def update_streaming(self, bubble, accumulated_text: str):
-        """用累积的文本更新流式气泡的内容。"""
+    def update_streaming(self, bubble, accumulated_text: str, reasoning: str = ""):
+        """用累积的文本更新流式气泡；reasoning 非空时在其上方保留思考块。"""
         from ..markdown_render import markdown_to_html
         html = markdown_to_html(accumulated_text)
+        if reasoning:
+            html = self._reasoning_block_html(reasoning) + html
         bubble.set_content(html)
         self._scroll_to_bottom_now()
 
@@ -615,6 +718,10 @@ class ChatPanel(QDockWidget):
             self._loading_bubble.stop()
             self._loading_bubble.deleteLater()
             self._loading_bubble = None
+            # 移除高大的加载/思考气泡后内容骤然变短，滚动条会停在旧的最大值上，
+            # 屏幕看起来就是「对话完成后下方一大片空白」。等布局稳定后重新贴底。
+            QTimer.singleShot(0, self._stick_to_bottom)
+            QTimer.singleShot(150, self._stick_to_bottom)
 
     def set_analyze_callback(self, callback):
         self.analyze_btn.clicked.connect(callback)

@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from ..utils.logging_setup import get_logger
+
+log = get_logger(__name__)
+
 
 # 模块 ID 列表
 AVAILABLE_MODULES = ["chapters", "characters", "outline", "timeline", "worldview", "map", "ai_assistant"]
@@ -70,6 +74,7 @@ class WorkMeta:
     date_era: str = ""  # 时间线纪元名，如「神启」「星历」「帝国历」。空=无纪元
     work_id: str = ""  # UUID 唯一标识，用于目录命名和去重
     ai_system_prompt: str = ""  # 作品级自定义 AI 系统提示词(追加到默认提示词后,用于风格/尺度定制)
+    ai_prompt_prepend: bool = False  # True:作品提示词置顶注入(最高优先级,优先于默认系统提示词)
 
     def __post_init__(self):
         if isinstance(self.git, dict):
@@ -117,7 +122,7 @@ def load_meta(path: Path) -> Optional[WorkMeta]:
         data = json.loads(path.read_text(encoding="utf-8"))
         return WorkMeta(**data)
     except (json.JSONDecodeError, TypeError, KeyError) as e:
-        print(f"警告: 读取元数据失败 {path}: {e}")
+        log.warning("读取元数据失败 %s: %s", path, e)
         return None
 
 
@@ -132,7 +137,7 @@ def save_meta(path: Path, meta: WorkMeta) -> bool:
         )
         return True
     except (OSError, TypeError) as e:
-        print(f"错误: 写入元数据失败 {path}: {e}")
+        log.error("写入元数据失败 %s: %s", path, e)
         return False
 
 

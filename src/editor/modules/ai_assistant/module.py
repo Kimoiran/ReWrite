@@ -32,6 +32,12 @@ class AIAssistantModule(BaseModule):
         super().__init__(work_path, parent)
         self.config = load_ai_config()
         self.agent = AIAgent(self.config, work_name=work_path.name)
+        # 本作品启用的模块：工具清单、系统提示词、执行守卫都要据此收窄，
+        # 否则关闭的功能仍会被 AI 调用（用户看到的「关了还在写」）。
+        try:
+            self.agent.enabled_modules = self._work_modules()
+        except Exception:
+            logger.debug("读取启用模块失败,按全部启用处理", exc_info=True)
         self.annotation_mgr = AnnotationManager(work_path)
         self.annotation_mgr.load()
         self._editor = None
@@ -42,6 +48,8 @@ class AIAssistantModule(BaseModule):
         # 流式显示状态
         self._streaming_bubble = None
         self._streaming_text = ""
+        # 本轮思考过程（只用于显示/回看，永不发回模型）
+        self._round_reasoning = ""
         # AI 写操作撤销栈 + 「全部允许」标志
         self._undo_stack = AIUndoStack()
         # 本轮对话开始前的快照栈深度(撤回时整轮回滚)
@@ -143,7 +151,7 @@ class AIAssistantModule(BaseModule):
             r = msg.get("role", "user"); c = msg.get("content", "")
             if c:
                 # track=False:历史回放不记录会话起点,避免启动后撤回清空全部历史气泡
-                self.chat_panel.add_message(r, AIOrchestrator.render_message(c), track=False)
+                self.chat_panel.add_message(r, self.chat_panel.render_assistant(c), track=False)
         self.chat_panel.update_memory(len(self.agent.history))
         self.chat_panel.set_undo_enabled(len(self.agent.history) >= 2)
         self.chat_panel.clear_requested.connect(self._on_clear_memory)
@@ -279,7 +287,7 @@ class AIAssistantModule(BaseModule):
             agent_ref._persist()
             self.chat_panel._on_clear()
             self.chat_panel.add_message("assistant",
-                AIOrchestrator.render_message(f"✅ 记忆已压缩。\n\n{summary}"))
+                self.chat_panel.render_assistant(f"✅ 记忆已压缩。\n\n{summary}"))
             self.chat_panel.update_memory(len(agent_ref.history))
             QMessageBox.information(self.parent(), "完成", "记忆已压缩为摘要。")
 
@@ -302,7 +310,7 @@ class AIAssistantModule(BaseModule):
     def _on_edit_work_prompt(self):
         """编辑作品级自定义 AI 提示词(风格/尺度定制,追加到默认提示词后)。"""
         from PySide6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QTextEdit,
-                                       QDialogButtonBox)
+                                       QDialogButtonBox, QCheckBox)
         from ....storage.meta import load_meta, save_meta
         meta = load_meta(self.work_path / "work.json")
         if meta is None:
@@ -311,17 +319,21 @@ class AIAssistantModule(BaseModule):
             return
         dlg = QDialog(self.parent())
         dlg.setWindowTitle("作品级 AI 提示词")
-        dlg.setMinimumSize(480, 360)
+        dlg.setMinimumSize(480, 400)
         lo = QVBoxLayout(dlg)
         tip = QLabel(
-            "这段提示词会<b>追加</b>在 AI 的系统提示词末尾,只对本作品生效。\n"
-            "可用来自定义文风、尺度、禁忌等。留空 = 使用默认提示词。")
+            "这段提示词只对本作品生效,可自定义文风、尺度、禁忌等。留空 = 使用默认提示词。\n"
+            "勾选「置顶」后它将注入到系统提示词<b>最前面</b>(最高优先级),\n"
+            "适合需要严格约束(如宪法式规则)的写作场景;未勾选时追加在末尾。")
         tip.setWordWrap(True)
         lo.addWidget(tip)
         edit = QTextEdit()
         edit.setPlaceholderText("例如:\n- 描写细腻,多用通感与身体细节\n- 允许成人内容,大胆而克制地展开……")
         edit.setPlainText(meta.ai_system_prompt or "")
         lo.addWidget(edit, 1)
+        prepend_cb = QCheckBox("🔝 置顶注入(最高优先级,优先于默认系统提示词)")
+        prepend_cb.setChecked(bool(getattr(meta, "ai_prompt_prepend", False)))
+        lo.addWidget(prepend_cb)
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(dlg.accept)
@@ -329,23 +341,26 @@ class AIAssistantModule(BaseModule):
         lo.addWidget(btns)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             meta.ai_system_prompt = edit.toPlainText().strip()
+            meta.ai_prompt_prepend = prepend_cb.isChecked()
             if save_meta(self.work_path / "work.json", meta):
+                mode = "置顶" if prepend_cb.isChecked() else "追加在末尾"
                 self.chat_panel.add_message(
-                    "assistant", "✅ 作品提示词已保存,下一次对话生效")
+                    "assistant", f"✅ 作品提示词已保存({mode}),下一次对话生效")
             else:
                 from PySide6.QtWidgets import QMessageBox
                 QMessageBox.warning(self.parent(), "失败", "保存作品提示词失败")
 
-    def _work_ai_prompt(self) -> str:
-        """读取作品级自定义 AI 提示词(work.json 的 ai_system_prompt)。"""
+    def _work_ai_prompt(self) -> tuple[str, bool]:
+        """读取作品级自定义 AI 提示词及其注入位置(work.json 的 ai_system_prompt / ai_prompt_prepend)。"""
         try:
             from ....storage.meta import load_meta
             meta = load_meta(self.work_path / "work.json")
             if meta:
-                return (meta.ai_system_prompt or "").strip()
+                return ((meta.ai_system_prompt or "").strip(),
+                        bool(getattr(meta, "ai_prompt_prepend", False)))
         except Exception:
-            pass
-        return ""
+            logger.debug("读取作品级 AI 提示词失败", exc_info=True)
+        return "", False
 
     def _do_chat(self, message: str, context: str):
         from .worker import StreamingProposalWorker
@@ -357,11 +372,19 @@ class AIAssistantModule(BaseModule):
             return
         # 新任务开始:复位任务内自动继续(会话级「全部允许」保留)
         self._task_auto = False
+        # 每次任务重新读取启用模块(设置里改了模块后无需重启即可生效)
+        try:
+            self.agent.enabled_modules = self._work_modules()
+        except Exception:
+            logger.debug("刷新启用模块失败", exc_info=True)
         self._streaming_bubble = None
         self._streaming_text = ""
+        self._round_reasoning = ""
 
+        work_prompt, work_prepend = self._work_ai_prompt()
         w = StreamingProposalWorker(
-            self.agent, message, context, extra_system=self._work_ai_prompt())
+            self.agent, message, context,
+            extra_system=work_prompt, prepend_extra_system=work_prepend)
         # 信号闭包携带 worker 身份:旧任务延迟到达的信号按代际忽略
         w.text_chunk.connect(lambda t, w=w: self._on_stream_chunk(w, t))
         w.reasoning_chunk.connect(lambda t, w=w: self._set_loading_reasoning(w, t))
@@ -374,8 +397,13 @@ class AIAssistantModule(BaseModule):
         w.start()
 
     def _set_loading_reasoning(self, w, text: str):
-        if self._proposal_worker is not w:
+        if self._proposal_worker is not w and self._loop_worker is not w:
             return  # 旧任务延迟信号:忽略
+        if not text:
+            return
+        # 累积本轮思考过程：结束时并入最终消息，既能回看，也不会发回模型
+        # （发回前由 providers.sanitize_messages 剥离）。
+        self._round_reasoning = (self._round_reasoning + text)[-8000:]
         if hasattr(self.chat_panel, '_loading_bubble') and self.chat_panel._loading_bubble:
             self.chat_panel._loading_bubble.set_reasoning(text)
 
@@ -388,7 +416,8 @@ class AIAssistantModule(BaseModule):
         self._streaming_text += text
         if self._streaming_bubble is None:
             self._streaming_bubble = self.chat_panel.begin_streaming_message()
-        self.chat_panel.update_streaming(self._streaming_bubble, self._streaming_text)
+        self.chat_panel.update_streaming(self._streaming_bubble, self._streaming_text,
+                                         reasoning=self._round_reasoning)
 
     # 工具名子串 → 影响的模块 id(按需刷新面板用)
     _TOOL_MODULE_MAP = [
@@ -404,6 +433,30 @@ class AIAssistantModule(BaseModule):
     def _is_read_tool(name: str) -> bool:
         """读工具(只读,不弹确认)。"""
         return name.startswith(("get_", "read_", "search_", "list_"))
+
+    def _work_modules(self) -> set:
+        """本作品启用的模块 id 集合（work.json 的 modules；章节为必选）。"""
+        from ....storage.meta import load_meta
+        meta = load_meta(self.work_path / "work.json")
+        mods = set(meta.modules) if meta and meta.modules else {"chapters"}
+        mods.add("chapters")
+        return mods
+
+    def _tool_allowed(self, name: str) -> bool:
+        """该工具在当前作品是否可用（模块未启用则不可用）。"""
+        from .skills.registry import tool_enabled
+        return tool_enabled(name, getattr(self.agent, "enabled_modules", None))
+
+    def _disabled_tool_result(self, name: str) -> dict:
+        """模块未启用时的拒绝结果：告诉 AI 真实原因，避免它反复重试。"""
+        from .skills.registry import MODULE_LABELS, skill_module
+        mod = skill_module(name) or ""
+        label = MODULE_LABELS.get(mod, mod or "相关")
+        logger.info("拒绝调用未启用模块的工具: %s (%s)", name, mod)
+        return {"success": False,
+                "error": f"「{label}」模块在本作品未启用，无法调用 {name}。"
+                         f"请不要重试，也不要假装已经完成；"
+                         f"如需该功能请让用户在作品设置中启用对应模块。"}
 
     def _module_for_tool(self, name: str) -> set:
         for prefix, mod in self._TOOL_MODULE_MAP:
@@ -478,7 +531,7 @@ class AIAssistantModule(BaseModule):
                 try:
                     w.request_stop()
                 except Exception:
-                    pass
+                    logger.debug("停止后台线程失败", exc_info=True)
 
         # 4) 状态收尾(与 _on_ai_error 一致),并防止自动续写继续
         self._stopped_flag = True
@@ -528,7 +581,10 @@ class AIAssistantModule(BaseModule):
                 from .providers import _ensure_work_args
                 from .skills.registry import execute_skill
                 _ensure_work_args(name, a)
-                result = execute_skill(name, a)
+                if not self._tool_allowed(name):
+                    result = self._disabled_tool_result(name)
+                else:
+                    result = execute_skill(name, a)
                 desc = (self._orchestrator._describe_tool(name, a, result)
                         if self._orchestrator is not None else _describe_tool(name, a, result))
             msgs.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": desc})
@@ -591,7 +647,9 @@ class AIAssistantModule(BaseModule):
                 pushed = not self._is_read_tool(name)
                 if pushed:
                     self._undo_stack.push(name, a, self.work_path)
-                if name == "update_chapter":
+                if not self._tool_allowed(name):
+                    result = self._disabled_tool_result(name)
+                elif name == "update_chapter":
                     result = self._do_chapter_diff(a, auto=auto)
                 else:
                     result = execute_skill(name, a)
@@ -641,17 +699,15 @@ class AIAssistantModule(BaseModule):
         auto=True(任务内自动继续):用户已授权本任务写操作,diff 对话框跳过。
         """
         from .skills.chapter_skills import normalize_chapter_content
+        from .skills._shared import (resolve_chapter_file, list_chapter_names,
+                                     chapter_display_name)
         work = self.work_path
         chapter = str(args.get("chapter", ""))
-        cd = work / "chapters"; old_c = ""; tp = None
-        if cd.exists():
+        cd = work / "chapters"; old_c = ""
+        tp = resolve_chapter_file(cd, chapter)
+        if tp is not None:
             try:
-                for f in cd.iterdir():
-                    if f.suffix.lower() not in (".md", ".html"):
-                        continue
-                    d = f.stem.split("_", 1)[-1] if "_" in f.stem else f.stem
-                    if d == chapter or f.stem == chapter:
-                        old_c = f.read_text(encoding="utf-8"); tp = f; break
+                old_c = tp.read_text(encoding="utf-8")
             except OSError as e:
                 return {"success": False, "error": f"读取章节失败: {e}"}
         new_c = args.get("content", "")
@@ -659,8 +715,7 @@ class AIAssistantModule(BaseModule):
         display_cn = chapter
         if tp is not None:
             # 显示名去前缀/扩展名,避免把「0001_第三章.md」泄漏进标题
-            stem = tp.stem
-            display_cn = stem.split("_", 1)[-1] if "_" in stem else stem
+            display_cn = chapter_display_name(tp)
         # 写入前规范化:标题行/段落空行(修复 AI 输出导致的标题粘连与换行消失)
         fallback = (old_c.splitlines()[0].lstrip("#").strip()
                     if old_c.strip() and old_c.splitlines()[0].lstrip().startswith("#")
@@ -668,17 +723,8 @@ class AIAssistantModule(BaseModule):
         new_c = normalize_chapter_content(new_c, fallback)
         if tp is None:
             # 真实错误:未找到章节(而非误导性的「用户拒绝」),附现有章节名供 AI 自修正
-            existing = []
-            if cd.exists():
-                try:
-                    existing = sorted(
-                        (f.stem.split("_", 1)[-1] if "_" in f.stem else f.stem)
-                        for f in cd.iterdir()
-                        if not f.name.startswith(".") and f.suffix.lower() in (".md", ".html"))
-                except OSError:
-                    pass
             return {"success": False, "error": f"未找到章节: {chapter}",
-                    "existing_chapters": existing}
+                    "existing_chapters": list_chapter_names(cd)}
         if not new_c:
             return {"success": False, "error": "章节内容为空,请提供 content 参数"}
         if auto or self._show_diff_dialog(old_c, new_c, cn):
@@ -735,11 +781,34 @@ class AIAssistantModule(BaseModule):
                 module_ref._on_worker_done(w)
 
         w.text_chunk.connect(lambda t, w=w: self._on_stream_chunk(w, t))
+        w.reasoning_chunk.connect(lambda t, w=w: self._set_loading_reasoning(w, t))
         w.finished.connect(on_data)
         w.error.connect(lambda e, w=w: self._on_ai_error(w, e))
         w.start()
 
     # ── 响应处理 ──
+
+    def _merge_reasoning(self, response: str) -> str:
+        """把本轮累计的思考过程并进回复文本（回复本身已带标记时不重复加）。"""
+        text = response or ""
+        reasoning = (self._round_reasoning or "").strip()
+        if "<!--REASONING-->" in text or not reasoning:
+            return text
+        return f"<!--REASONING-->\n{reasoning}\n<!--/REASONING-->\n\n{text}"
+
+    def _persist_final_text(self, final_text: str):
+        """历史里的最终 assistant 消息带上思考过程（便于回看），然后落盘。"""
+        history = self.agent.history
+        if history and history[-1].get("role") == "assistant":
+            if history[-1].get("content") != final_text:
+                history[-1] = {**history[-1], "content": final_text}
+        elif final_text:
+            history.append({"role": "assistant", "content": final_text})
+        try:
+            self.agent._persist()
+        except Exception:
+            logger.warning("保存对话历史失败", exc_info=True)
+        self._round_reasoning = ""
 
     def _on_ai_response(self, w, response: str):
         if self._proposal_worker is not w and self._loop_worker is not w:
@@ -747,13 +816,17 @@ class AIAssistantModule(BaseModule):
         if getattr(self, "_stopped_flag", False):
             return  # 停止与完成竞争:以停止为准(已记录部分内容,不再重复记录)
         self.chat_panel.hide_loading()
+        # 思考过程并入最终消息：既能在界面上回看，也随历史持久化；
+        # 发回模型前会被 providers.sanitize_messages 剥离，不占上下文。
+        final_text = self._merge_reasoning(response)
         # 如果之前有流式气泡，用渲染后的最终内容替换它
         if self._streaming_bubble is not None:
-            self._streaming_bubble.set_content(AIOrchestrator.render_message(response))
+            self._streaming_bubble.set_content(self.chat_panel.render_assistant(final_text))
             self._streaming_bubble = None
             self._streaming_text = ""
         else:
-            self.chat_panel.add_message("assistant", AIOrchestrator.render_message(response))
+            self.chat_panel.add_message("assistant", self.chat_panel.render_assistant(final_text))
+        self._persist_final_text(final_text)
         self.chat_panel.set_busy(False)  # 解锁发言栏
         self.chat_panel.update_memory(len(self.agent.history))
         try:

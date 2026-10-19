@@ -155,20 +155,41 @@ class AIOrchestrator:
         return messages
 
     @staticmethod
+    def split_reasoning(text: str) -> tuple[str, str]:
+        """拆分「思考过程」与正文，返回 (reasoning, body)。
+
+        思考过程在消息里用 ``<!--REASONING-->...<!--/REASONING-->`` 标记保存：
+
+        - **显示**：保留并渲染成折叠块，用户随时能回看 AI 的推理；
+        - **上下文**：发回 API 前必须剥离（见 ``providers.sanitize_messages``），
+          否则推理会挤占 token、还会让 AI 把草稿当既定事实。
+        """
+        if not text:
+            return "", ""
+        m = _re.search(r"<!--REASONING-->\s*(.*?)\s*<!--/REASONING-->\s*",
+                       text, _re.DOTALL)
+        if not m:
+            return "", text
+        body = (text[:m.start()] + text[m.end():]).strip()
+        return m.group(1).strip(), body
+
+    @staticmethod
     def render_message(text: str) -> str:
-        """渲染消息 HTML：提取推理标记 → markdown 渲染正文 → 拼接推理块。"""
+        """渲染消息 HTML（无 Qt 主题依赖的兜底实现）。
+
+        UI 层请优先使用 ``ChatPanel.render_assistant``：它会用主题色渲染思考块，
+        深色主题下不会出现刺眼的白块。
+        """
         from .markdown_render import markdown_to_html
-        reasoning_html = ""
-        m = _re.search(r'<!--REASONING-->\n(.*?)\n<!--/REASONING-->\n\n', text, _re.DOTALL)
-        if m:
-            import html as _html
-            reasoning_text = m.group(1)
-            text = text[:m.start()] + text[m.end():]
-            # 先转义再替换换行,防止 AI 推理内容注入 HTML(如 <img>/<a href="file://">)
-            reasoning_esc = _html.escape(reasoning_text).replace(chr(10), "<br>")
-            reasoning_html = (f"<div style='font-size:12px;color:#999;line-height:1.3;"
-                            f"padding:4px 8px;background:#fafafa;border-left:2px solid #ddd;"
-                            f"margin-bottom:8px;'><b>思考过程</b><br>"
-                            f"{reasoning_esc}</div>")
-        html = markdown_to_html(text)
-        return reasoning_html + html if reasoning_html else html
+        reasoning, body = AIOrchestrator.split_reasoning(text)
+        html = markdown_to_html(body)
+        if not reasoning:
+            return html
+        import html as _html
+        # 先转义再替换换行,防止 AI 推理内容注入 HTML(如 <img>/<a href="file://">)
+        reasoning_esc = _html.escape(reasoning).replace(chr(10), "<br>")
+        return (f"<div style='font-size:12px;color:#666;line-height:1.4;"
+                f"padding:6px 10px;background:#f4f4f4;border-left:3px solid #ccc;"
+                f"margin-bottom:8px;'><b>🧠 思考过程</b><br>"
+                f"{reasoning_esc}</div>" + html)
+

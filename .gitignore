@@ -74,6 +74,8 @@ src/mcp_manager.py
 
 # Release notes (local only, not uploaded)
 docs/release-notes/
+# 项目扫描报告(本地生成,不上传)
+docs/项目扫描报告.md
 doc/
 .VSCodeCounter/
 .reasonix/

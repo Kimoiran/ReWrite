@@ -3,6 +3,10 @@
 import threading
 from PySide6.QtCore import QThread, Signal
 
+from ....utils.logging_setup import get_logger
+
+log = get_logger(__name__)
+
 
 class ToolProposalWorker(QThread):
     """后台线程（兼容保留）：第一轮 — 向 AI 获取工具调用提案（非流式）。"""
@@ -47,12 +51,14 @@ class StreamingProposalWorker(QThread):
     text_response = Signal(str)            # 纯文本回复（含 reasoning 标记）
     api_error = Signal(str)
 
-    def __init__(self, agent, message: str, context: str = "", extra_system: str = ""):
+    def __init__(self, agent, message: str, context: str = "", extra_system: str = "",
+                 prepend_extra_system: bool = False):
         super().__init__()
         self.agent = agent
         self.message = message
         self.context = context
         self.extra_system = extra_system or ""
+        self.prepend_extra_system = prepend_extra_system
         self._stop_event = threading.Event()
 
     def request_stop(self):
@@ -63,15 +69,21 @@ class StreamingProposalWorker(QThread):
         hist_start = len(self.agent.history)  # 异常回滚基准(含重试轮追加的消息)
         try:
             from .providers import _make_streaming_request, _check_fake_completion, _StreamStopped
-            from .prompt_templates import DEFAULT_SYSTEM_PROMPT
+            from .prompt_templates import build_system_prompt
             from .skills.registry import get_openai_tools
 
-            system = self.agent.config.get("system_prompt", "") or DEFAULT_SYSTEM_PROMPT
+            # 工具铁律为硬编码(见 build_system_prompt),自定义提示词只能追加其后
+            system = build_system_prompt(self.agent.config,
+                                         getattr(self.agent, "enabled_modules", None))
             if self.context:
                 system += f"\n\n## 当前作品上下文\n{self.context}"
             if self.extra_system:
-                # 作品级自定义提示词(风格/尺度定制),始终追加在最后
-                system += f"\n\n## 本作品的额外写作要求\n{self.extra_system}"
+                # 作品级提示词注入位置:prepend=True 时置于最前(最高优先级,
+                # 适合需要严格"宪法式"约束的写作场景);默认追加在最后
+                if self.prepend_extra_system:
+                    system = f"{self.extra_system}\n\n---\n\n{system}"
+                else:
+                    system += f"\n\n## 本作品的额外写作要求\n{self.extra_system}"
 
             self.agent.history.append({"role": "user", "content": self.message})
             recent = self.agent.history[-40:]
@@ -80,21 +92,17 @@ class StreamingProposalWorker(QThread):
                 self.agent, recent, system,
                 on_reasoning=lambda t: self.reasoning_chunk.emit(t),
                 on_content=lambda t: self.text_chunk.emit(t),
-                tools=get_openai_tools(),
+                tools=get_openai_tools(getattr(self.agent, "enabled_modules", None)),
                 stop_event=self._stop_event,
             )
 
             if tool_calls:
                 # 构造 before/after 消息（与 get_proposals_only 格式一致）
+                from .providers import build_continuation_messages
                 full = [{"role": "system", "content": system}]
                 full.extend(recent)
                 before = list(full)
-                after = [{"role": "assistant", "content": full_text,
-                    "tool_calls": [{"id": tc["id"], "type": "function",
-                                    "function": {"name": tc["function"]["name"],
-                                                 "arguments": tc["function"]["arguments"]}}
-                                   for tc in tool_calls]}]
-                after.append({"role": "tool", "tool_call_id": "pending", "content": ""})
+                after = build_continuation_messages(recent, full_text, tool_calls)
 
                 if reasoning:
                     self.reasoning_chunk.emit(reasoning)
@@ -119,21 +127,17 @@ class StreamingProposalWorker(QThread):
                         self.agent, self.agent.history[-40:], system,
                         on_reasoning=lambda t: self.reasoning_chunk.emit(t),
                         on_content=lambda t: self.text_chunk.emit(t),
-                        tools=get_openai_tools(),
+                        tools=get_openai_tools(getattr(self.agent, "enabled_modules", None)),
                         stop_event=self._stop_event,  # 重试轮也响应停止
                     )
                     if tool_calls:
                         # 重试后真的调工具了 → 走提案路径
+                        from .providers import build_continuation_messages
+                        hist = self.agent.history[-40:]
                         full = [{"role": "system", "content": system}]
-                        full.extend(self.agent.history[-40:])
+                        full.extend(hist)
                         before = list(full)
-                        after = [{"role": "assistant", "content": full_text,
-                                  "tool_calls": [{"id": tc["id"], "type": "function",
-                                                  "function": {"name": tc["function"]["name"],
-                                                               "arguments": tc["function"]["arguments"]}}
-                                                 for tc in tool_calls]}]
-                        after.append({"role": "tool", "tool_call_id": "pending",
-                                      "content": ""})
+                        after = build_continuation_messages(hist, full_text, tool_calls)
                         if reasoning:
                             self.reasoning_chunk.emit(reasoning)
                         self.proposals_ready.emit(tool_calls, before, after, system)
@@ -162,7 +166,7 @@ class StreamingProposalWorker(QThread):
             try:
                 self.agent._persist()
             except Exception:
-                pass
+                log.warning("API 出错后回滚记忆落盘失败", exc_info=True)
             from .providers import friendly_api_error
             self.api_error.emit(friendly_api_error(str(e)))
 
@@ -173,8 +177,9 @@ class StreamingLoopWorker(QThread):
     将工具执行结果发回 AI，流式接收回复，同时检测是否有新的工具调用。
     """
 
-    finished = Signal(dict)      # 模拟的非流式响应 dict（复用 on_data 解析逻辑）
-    text_chunk = Signal(str)     # 正文片段 → UI 实时显示
+    finished = Signal(dict)        # 模拟的非流式响应 dict（复用 on_data 解析逻辑）
+    text_chunk = Signal(str)       # 正文片段 → UI 实时显示
+    reasoning_chunk = Signal(str)  # 推理片段 → 加载气泡（只显示，不进上下文）
     error = Signal(str)
 
     def __init__(self, agent, messages: list, system: str = ""):
@@ -195,7 +200,8 @@ class StreamingLoopWorker(QThread):
             full_text, tool_calls, _ = _make_streaming_request(
                 self.agent, self.messages, self.system,
                 on_content=lambda t: self.text_chunk.emit(t),
-                tools=get_openai_tools(),
+                on_reasoning=lambda t: self.reasoning_chunk.emit(t),
+                tools=get_openai_tools(getattr(self.agent, "enabled_modules", None)),
                 stop_event=self._stop_event,
             )
 
@@ -265,9 +271,11 @@ class ReasoningWorker(QThread):
 
     def run(self):
         try:
-            from .prompt_templates import DEFAULT_SYSTEM_PROMPT
+            from .prompt_templates import build_system_prompt
 
-            system = self.agent.config.get("system_prompt", "") or DEFAULT_SYSTEM_PROMPT
+            # 工具铁律为硬编码(见 build_system_prompt),自定义提示词只能追加其后
+            system = build_system_prompt(self.agent.config,
+                                         getattr(self.agent, "enabled_modules", None))
             if self.context:
                 system += f"\n\n## 当前作品上下文\n{self.context}"
 

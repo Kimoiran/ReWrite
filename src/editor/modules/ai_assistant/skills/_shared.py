@@ -2,7 +2,12 @@
 
 import json
 import re as _re
+import unicodedata
 from pathlib import Path
+
+from .....utils.logging_setup import get_logger
+
+log = get_logger(__name__)
 
 
 def list_works() -> list:
@@ -24,7 +29,7 @@ def list_works() -> list:
                     "updated": m.get("updated", ""),
                 })
             except Exception:
-                pass
+                log.warning("读取作品元数据失败 %s", meta, exc_info=True)
     return works
 
 
@@ -62,7 +67,7 @@ def _work_path(name: str) -> Path:
                 if data.get("title") == name:
                     return child
             except Exception:
-                pass
+                log.debug("读取作品元数据失败 %s", meta, exc_info=True)
     for child in wd.iterdir():
         if not child.is_dir() or child.name.startswith("."):
             continue
@@ -76,12 +81,17 @@ def _load(path: Path) -> dict:
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except Exception:
+            log.warning("读取数据文件失败,按空数据处理 %s", path, exc_info=True)
             return {}
     return {}
 
 
 def _save(path: Path, data):
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as e:
+        log.error("写入数据文件失败 %s: %s", path, e)
+        raise
 
 
 def make_chapter_md(title: str, content: str = "") -> str:
@@ -200,3 +210,147 @@ def _fmt_nodes(obj, fields: set, max_len: int = 100):
         for item in obj:
             _fmt_nodes(item, fields, max_len)
     return obj
+
+
+# ─────────────────────────────────────────────────────────────
+# 章节文件解析
+#
+# 章节文件名是 ``NNNN_标题.md``。AI 几乎从不会完整复述标题：
+# 它会说「第1章」「第一章」「第一章 在孤儿院的日子」甚至只给一个数字。
+# 旧实现只做严格相等比较（display == 章节名），于是频繁「未找到章节」，
+# AI 只能退回去用 search_chapters(RAG) 把正文「搜回来」。
+# 下面这套解析让上述写法都能命中同一个文件。
+# ─────────────────────────────────────────────────────────────
+
+_CN_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+              "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNITS = {"十": 10, "百": 100}
+
+_CHAPTER_CN_RE = _re.compile(r"第([零〇一二两三四五六七八九十百]+)([章节回卷篇部])")
+_PUNCT_RE = _re.compile(
+    r"[\s_\-—–…·、,，。.:：;；!！?？\"'“”‘’()（）\[\]【】《》<>|\\/]+")
+_LEADING_DIGITS_RE = _re.compile(r"^(\d+)")
+_ARABIC_CHAPTER_RE = _re.compile(r"第\s*([0-9]+)\s*[章节回卷篇部]")
+
+_CHAPTER_SUFFIXES = (".md", ".html")
+
+
+def cn_numeral_to_int(text: str) -> int:
+    """中文数字转整数：「十二」→12、「二十三」→23、「一百零五」→105。
+
+    无法解析时返回 0（调用方据此跳过）。
+    """
+    if not text:
+        return 0
+    total = 0
+    current = 0
+    for ch in text:
+        if ch in _CN_DIGITS:
+            current = _CN_DIGITS[ch]
+        elif ch in _CN_UNITS:
+            total += (current or 1) * _CN_UNITS[ch]
+            current = 0
+        else:
+            return 0
+    return total + current
+
+
+def normalize_chapter_name(text: str) -> str:
+    """归一化章节名，用于宽松比对。
+
+    全角转半角 → 中文数字章节号转阿拉伯数字 → 转小写 → 去掉标点/空白/下划线。
+    「第一章 在孤儿院的日子」与「0001_第1章在孤儿院的日子」都归一成
+    ``第1章在孤儿院的日子``。
+    """
+    t = unicodedata.normalize("NFKC", (text or "").strip())
+    # 去掉文件名里的「0001_」序号前缀，让文件名与显示名可比
+    t = _re.sub(r"^\d+_", "", t)
+    t = _CHAPTER_CN_RE.sub(
+        lambda m: (f"第{cn_numeral_to_int(m.group(1))}{m.group(2)}"
+                   if cn_numeral_to_int(m.group(1)) else m.group(0)),
+        t)
+    return _PUNCT_RE.sub("", t.lower())
+
+
+def chapter_order(text: str) -> "int | None":
+    """提取章节序号：「第12章 x」「0012_x」「十二」「第十二章」→ 12。"""
+    t = (text or "").strip()
+    if not t:
+        return None
+    m = _LEADING_DIGITS_RE.match(t)
+    if m:
+        return int(m.group(1))
+    m = _ARABIC_CHAPTER_RE.search(t)
+    if m:
+        return int(m.group(1))
+    m = _CHAPTER_CN_RE.search(t)
+    if m:
+        n = cn_numeral_to_int(m.group(1))
+        if n:
+            return n
+    n = cn_numeral_to_int(t)
+    return n or None
+
+
+def list_chapter_files(chapters_dir: Path) -> list[Path]:
+    """列出真正的章节文件（.md/.html，排除隐藏文件与 .bak/.tmp 残留）。"""
+    try:
+        if not Path(chapters_dir).is_dir():
+            return []
+        return [
+            f for f in sorted(Path(chapters_dir).iterdir())
+            if f.is_file() and not f.name.startswith(".")
+            and f.suffix.lower() in _CHAPTER_SUFFIXES
+        ]
+    except OSError as e:
+        log.warning("扫描章节目录失败 %s: %s", chapters_dir, e)
+        return []
+
+
+def chapter_display_name(path: Path) -> str:
+    """章节显示名：去掉 ``NNNN_`` 序号前缀与扩展名。"""
+    stem = Path(path).stem
+    return stem.split("_", 1)[-1] if "_" in stem else stem
+
+
+def list_chapter_names(chapters_dir: Path) -> list[str]:
+    """所有章节的显示名（供「未找到章节」时回传给 AI 自修正）。"""
+    return [chapter_display_name(f) for f in list_chapter_files(chapters_dir)]
+
+
+def _chapter_match_score(stem: str, display: str, query: str) -> int:
+    """章节匹配打分（0 = 不匹配，越大越可信）。"""
+    q = (query or "").strip()
+    q_norm = normalize_chapter_name(q)
+    if not q_norm:
+        return 0
+    d_norm = normalize_chapter_name(display)
+    s_norm = normalize_chapter_name(stem)
+
+    if q == stem or q == display:
+        return 100
+    if q_norm in (d_norm, s_norm):
+        return 95
+    # 「第1章」⊂「第1章 在孤儿院的日子」（任一方向）
+    if d_norm.startswith(q_norm) or q_norm.startswith(d_norm):
+        return 85
+    if q_norm in d_norm:
+        return 75
+    # 序号兜底：「第一章」↔「第1章 xxx」↔「0001_x」
+    q_order = chapter_order(q)
+    if q_order is not None and q_order == chapter_order(display):
+        return 60
+    return 0
+
+
+def resolve_chapter_file(chapters_dir: Path, query: str) -> "Path | None":
+    """把 AI 给的章节名宽松解析成实际文件；命中不了返回 None。"""
+    if not (query or "").strip():
+        return None
+    best, best_score = None, 0
+    for f in list_chapter_files(chapters_dir):
+        score = _chapter_match_score(f.stem, chapter_display_name(f), query)
+        if score > best_score:
+            best, best_score = f, score
+    return best
+

@@ -12,6 +12,9 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from src.storage.workspace import Workspace
+from src.utils.logging_setup import get_logger, install_excepthook, setup_logging
+
+log = get_logger(__name__)
 
 
 def _clean_crash_markers(workspace: Workspace):
@@ -23,29 +26,34 @@ def _clean_crash_markers(workspace: Workspace):
             marker = wp / ".autosave" / ".crash_marker"
             try:
                 marker.unlink()
-            except OSError:
-                pass
+            except OSError as e:
+                log.debug("清理崩溃标记失败 %s: %s", marker, e)
 
 
 def main():
+    setup_logging()
+    install_excepthook()
+
     app = QApplication(sys.argv)
     app.setApplicationName("ReWrite")
     app.setOrganizationName("ReWrite")
-    app.setApplicationVersion("1.2.0")
+    app.setApplicationVersion("1.2.2")
+    log.info("ReWrite %s 启动 (Python %s)", app.applicationVersion(),
+             sys.version.split()[0])
     # Windows 任务栏图标：AppUserModelID 必须在窗口创建前设置
     try:
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Kimoiran.ReWrite")
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("设置 AppUserModelID 失败: %s", e)
 
     # Windows 定时器精度 1ms(默认 ~15.6ms):QPropertyAnimation 帧率
     # 从 ~64fps 提升到近 1000Hz tick,高刷屏(120/180Hz)动画不再卡顿闪烁
     try:
         import ctypes
         ctypes.windll.winmm.timeBeginPeriod(1)
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("提升定时器精度失败(动画可能略卡): %s", e)
 
     # 应用主题(用户配置;默认浅青蓝,非法值兜底)
     from src.settings.general_settings import load_settings
@@ -113,6 +121,7 @@ def main():
                     launcher.setGeometry(prev_geo)
                 launcher.show()
             except Exception:
+                log.exception("从编辑器返回启动页时出错,执行兜底显示")
                 launcher.show()  # 兜底:异常也要回到主页
             finally:
                 # 本次切换后恢复淡入(下次打开作品等场景仍生效)

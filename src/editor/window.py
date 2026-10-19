@@ -452,9 +452,8 @@ class EditorWindow(QMainWindow):
 
         file_path, _ = QFileDialog.getOpenFileName(
             self, "导入文件", "",
-            "支持的文件 (*.writepack *.md *.docx *.txt);;"
+            "支持的文件 (*.writepack *.md *.txt);;"
             "Markdown (*.md);;"
-            "Word 文档 (*.docx);;"
             "纯文本 (*.txt)"
         )
         if not file_path:
@@ -474,20 +473,6 @@ class EditorWindow(QMainWindow):
                 self.chapter_list._refresh()
                 self._load_chapter_content(str(result))
                 QMessageBox.information(self, "成功", "Markdown 导入为新的章节")
-        elif suffix == ".docx":
-            from ..import_export.docx_import import import_docx_as_chapter
-            chap_mod = self.modules.get("chapters")
-            if not chap_mod:
-                return
-            try:
-                result = import_docx_as_chapter(path, chap_mod)
-                if result:
-                    chap_mod.save()
-                    self.chapter_list._refresh()
-                    self._load_chapter_content(str(result))
-                    QMessageBox.information(self, "成功", "Word 文档导入为新的章节")
-            except ImportError:
-                QMessageBox.information(self, "需要安装依赖", "Word 导入需要 python-docx 库")
         elif suffix == ".txt":
             from ..import_export.plaintext_import import import_text_as_chapter
             chap_mod = self.modules.get("chapters")
@@ -500,7 +485,7 @@ class EditorWindow(QMainWindow):
                 self._load_chapter_content(str(result))
                 QMessageBox.information(self, "成功", "纯文本导入为新的章节")
         else:
-            QMessageBox.information(self, "提示", "编辑器内导入仅支持 .md/.docx/.txt\n"
+            QMessageBox.information(self, "提示", "编辑器内导入仅支持 .md/.txt\n"
                                      ".writepack 请在作品选择页导入")
 
     def _on_open_settings(self):

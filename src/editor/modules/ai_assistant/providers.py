@@ -6,6 +6,44 @@ import urllib.request, urllib.error
 from abc import ABC, abstractmethod
 
 from .skills.registry import get_all_skills, get_skill, execute_skill, get_openai_tools, get_claude_tools
+from ....utils.logging_setup import get_logger
+
+log = get_logger(__name__)
+
+# 思考过程标记：显示时保留，发给 API 前必须剥离
+_REASONING_BLOCK_RE = re.compile(
+    r"<!--REASONING-->\s*.*?\s*<!--/REASONING-->\s*", re.DOTALL)
+
+
+def strip_reasoning(text: str) -> str:
+    """去掉消息里的思考过程块，返回纯正文。
+
+    思考过程只用于界面显示与历史回放；如果把它一起发回模型，
+    一来白烧 token（推理往往比正文还长），二来模型会把自己斟酌中的
+    猜测当成既定事实，导致后续写作跑偏。
+    """
+    if not isinstance(text, str) or "<!--REASONING-->" not in text:
+        return text
+    return _REASONING_BLOCK_RE.sub("", text).strip()
+
+
+def sanitize_messages(messages: list) -> list:
+    """构造 API 请求前清理消息：剥离思考过程，丢弃因此变空的助手消息。
+
+    保留带 ``tool_calls`` 的消息（否则 assistant/tool 配对会被破坏）。
+    """
+    cleaned = []
+    for msg in messages or []:
+        content = msg.get("content")
+        if not isinstance(content, str):
+            cleaned.append(msg)          # Claude 的 content blocks 原样保留
+            continue
+        stripped = strip_reasoning(content)
+        if (not stripped and content.strip() and not msg.get("tool_calls")
+                and msg.get("role") == "assistant"):
+            continue                     # 这条消息除了思考过程什么都没有
+        cleaned.append(msg if stripped is content else {**msg, "content": stripped})
+    return cleaned
 
 SKILLS = get_all_skills()
 TOOL_NAMES = {s.name for s in SKILLS}
@@ -128,7 +166,7 @@ class ClaudeProvider(AIProvider):
                 if result:
                     return result
         except Exception:
-            pass
+            log.warning("Claude 工具结果二次请求失败,回退为本地描述", exc_info=True)
         return f"工具已执行: {name}"
 
 
@@ -144,7 +182,7 @@ class OpenAIProvider(AIProvider):
         full = []
         if system_prompt:
             full.append({"role": "system", "content": system_prompt})
-        full.extend(messages)
+        full.extend(sanitize_messages(messages))
         body = json.dumps({"model": self.model, "max_tokens": 32768, "messages": full}).encode("utf-8")
         req = urllib.request.Request(f"{self.api_url}/chat/completions", data=body,
             headers={"Authorization": f"Bearer {self.api_key}",
@@ -164,7 +202,7 @@ class OpenAIProvider(AIProvider):
         full = []
         if system_prompt:
             full.append({"role": "system", "content": system_prompt})
-        full.extend(messages)
+        full.extend(sanitize_messages(messages))
         tools = get_openai_tools()
         body = json.dumps({"model": self.model, "max_tokens": 32768,
             "messages": full, "tools": tools}).encode("utf-8")
@@ -220,7 +258,7 @@ class OpenAIProvider(AIProvider):
                 if result:
                     return result
         except Exception:
-            pass
+            log.warning("OpenAI 工具结果二次请求失败,回退为本地描述", exc_info=True)
         return "工具已执行: " + ", ".join(executed)
 
 
@@ -236,7 +274,7 @@ def _make_chat_request(agent, messages: list, system_prompt: str = "", tools: li
     full = []
     if system_prompt and system_prompt.strip():
         full.append({"role": "system", "content": system_prompt})
-    full.extend(messages)
+    full.extend(sanitize_messages(messages))
     payload = {"model": model, "max_tokens": 32768, "messages": full}
     if tools:
         payload["tools"] = tools
@@ -260,7 +298,7 @@ def _extract_reasoning(data: dict) -> str:
         if "reasoning_content" in msg:
             return msg["reasoning_content"] or ""
     except Exception:
-        pass
+        log.debug("解析 reasoning_content 失败", exc_info=True)
     return ""
 
 
@@ -300,7 +338,7 @@ def _make_streaming_request(agent, messages: list, system_prompt: str = "",
     full = []
     if system_prompt and system_prompt.strip():
         full.append({"role": "system", "content": system_prompt})
-    full.extend(messages)
+    full.extend(sanitize_messages(messages))
 
     payload = {"model": model, "max_tokens": 32768, "messages": full, "stream": True}
     if tools:
@@ -494,7 +532,7 @@ def get_proposals_only(agent, message: str, context: str = ""):
     返回 (tool_calls, messages_before, messages_after) 或 错误文本。
     """
     import json as _j
-    from .prompt_templates import DEFAULT_SYSTEM_PROMPT
+    from .prompt_templates import build_system_prompt
 
     config = agent.config
     provider = create_provider(
@@ -507,7 +545,8 @@ def get_proposals_only(agent, message: str, context: str = ""):
     if not hasattr(provider, "send_with_tools"):
         return agent.send_message(message, current_context=context)
 
-    system = config.get("system_prompt", "") or DEFAULT_SYSTEM_PROMPT
+    # 工具铁律为硬编码(见 build_system_prompt),自定义提示词只能追加其后
+    system = build_system_prompt(config, getattr(agent, "enabled_modules", None))
     if context:
         system += f"\n\n## 当前作品上下文\n{context}"
 
@@ -516,8 +555,8 @@ def get_proposals_only(agent, message: str, context: str = ""):
 
     # 构建请求
     full = [{"role": "system", "content": system}]
-    full.extend(recent)
-    tools = get_openai_tools()
+    full.extend(sanitize_messages(recent))
+    tools = get_openai_tools(getattr(agent, "enabled_modules", None))
 
     body = _j.dumps({"model": provider.model, "max_tokens": 32768,
                       "messages": full, "tools": tools}).encode("utf-8")
@@ -558,12 +597,8 @@ def get_proposals_only(agent, message: str, context: str = ""):
 
     # 构建传递用的 messages
     before = list(full)
-    after = [{"role": "assistant", "content": content,
-              "tool_calls": [{"id": tc["id"], "type": "function",
-                              "function": {"name": tc["function"]["name"],
-                                          "arguments": tc["function"]["arguments"]}}
-                             for tc in tool_calls]}]
-    after.append({"role": "tool", "tool_call_id": "pending", "content": ""})  # placeholder
+    # 续写轮必须带上完整对话（见 build_continuation_messages 的说明）
+    after = build_continuation_messages(recent, content, tool_calls)
 
     return (tool_calls, before, after, system, reasoning)
 
@@ -582,7 +617,7 @@ def get_final_response(agent, messages: list, system_prompt: str = ""):
     )
 
     body = _j.dumps({"model": provider.model, "max_tokens": 32768,
-                      "messages": messages}).encode("utf-8")
+                      "messages": sanitize_messages(messages)}).encode("utf-8")
     req = urllib.request.Request(f"{provider.api_url}/chat/completions", data=body,
         headers={"Authorization": f"Bearer {provider.api_key}",
                  "content-type": "application/json", "User-Agent": "ReWrite/1.0"})
@@ -599,6 +634,29 @@ def get_final_response(agent, messages: list, system_prompt: str = ""):
     agent.history.append({"role": "assistant", "content": result})
     agent._persist()
     return result
+
+
+def build_continuation_messages(recent: list, content: str, tool_calls: list) -> list:
+    """构造「工具执行后继续」这一轮要发给 AI 的消息。
+
+    必须带上完整对话 ``recent``（含用户原始要求：篇幅、字数、风格、目标章节）。
+
+    历史 bug：这里曾经只放 ``[assistant 工具调用, tool 占位]``，
+    于是第二轮起 AI 既看不到「每章 5000 字」，也看不到前面写过的章节，
+    表现为「要求 5000 字，自动化连续写作时缩到 1000 字左右」。
+    """
+    messages = list(recent)
+    messages.append({
+        "role": "assistant",
+        "content": content,
+        "tool_calls": [{"id": tc["id"], "type": "function",
+                        "function": {"name": tc["function"]["name"],
+                                     "arguments": tc["function"]["arguments"]}}
+                       for tc in tool_calls],
+    })
+    # 占位:真实工具结果由调用方随后追加(见 prepare_after_messages)
+    messages.append({"role": "tool", "tool_call_id": "pending", "content": ""})
+    return messages
 
 
 def create_provider(provider_type, api_key, model="", api_url=""):

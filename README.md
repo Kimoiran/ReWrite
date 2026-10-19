@@ -36,6 +36,7 @@ python src/main.py
 | 作品数据    | 源码运行：项目根目录 `works/`；打包后：exe 同目录 `works/`（可在设置中迁移） |
 | 配置文件    | `%USERPROFILE%\.rewrite\`（API Key、Git Token、设置） |
 | AI 对话历史 | `%USERPROFILE%\.rewrite\history\`                     |
+| 运行日志    | `%USERPROFILE%\.rewrite\logs\rewrite.log`（轮转，最多 4 份 × 1 MB） |
 
 ---
 
@@ -152,7 +153,7 @@ ReWrite 使用**工作空间级 Git 仓库**——所有作品共享一个 `work
 
 **交互方式：** 侧边面板对话，芯片式控制 AI 能读取哪些模块的数据。
 
-**Skill 系统（共 32 个）：**
+**Skill 系统（共 32 个，按作品启用的模块自动收窄）：**
 
 | 模块      | 技能数 | 技能                                                                                                                |
 | --------- | ------ | ------------------------------------------------------------------------------------------------------------------- |
@@ -162,7 +163,11 @@ ReWrite 使用**工作空间级 Git 仓库**——所有作品共享一个 `work
 | 📅 时间线 | 4      | create_timeline_event, get_timeline, update_timeline_event, delete_timeline_event                                   |
 | 🌍 世界观 | 4      | get_worldview, create_worldview_entry, update_worldview_entry, delete_worldview_entry                               |
 | 🗺️ 地图 | 6      | get_map, create_map_node, update_map_node, delete_map_node, create_map_route, delete_map_route                      |
-| 🔍 搜索   | 1      | search_chapters（TF-IDF 语义搜索章节正文）                                                                          |
+| 🔍 搜索   | 1      | search_chapters（TF-IDF 语义搜索章节正文，归入章节模块）                                                              |
+
+> **工具清单跟随启用模块**：作品只开了「章节」时，AI 只能看到 7 个章节相关工具；
+> 关掉的模块既不出现在提示词的清单里，注册表也不会把它的工具定义发给模型，
+> 执行层还会再拦一次并回传「该模块未启用」。三层防护，避免 AI 去写没开的功能。
 
 **核心机制：**
 
@@ -172,7 +177,17 @@ ReWrite 使用**工作空间级 Git 仓库**——所有作品共享一个 `work
 - **任务内自动继续**：确认一次写操作后，本任务内后续操作自动执行，无需逐条确认
 - **「■ 停止」**：AI 工作期间可随时中断生成；已生成内容与已执行操作会保留并记入记忆
 - **撤回 = 数据回滚**：AI 写操作前自动快照，点「↩ 撤回」恢复数据并撤回对话
-- **自校验机制**：操作失败时返回现有数据列表，AI 自动修正
+- **自校验机制**：操作失败时返回现有数据列表（含 `existing_chapters`），AI 自动修正
+- **章节名模糊匹配**：「第一章」「第1章」「第1章 在孤儿院的日子」都能定位到同一章，
+  不再因为 AI 没逐字复述标题就报「未找到章节」
+- **续写不丢上下文**：工具执行后的续写轮会带上完整对话，因此「每章 5000 字」这类要求
+  在连续写作多章时依然生效，不会越写越短
+- **工具随模块收窄**：作品关掉的模块不会出现在工具清单里，执行层也会拒绝调用
+- **思考过程可回看、不进上下文**：推理内容显示在气泡上方（深色主题下用主题色，
+  不会再变成刺眼白块），并随历史持久化；但发回模型前会被剥离——既省 token，
+  也避免 AI 把自己斟酌中的猜测当成既定事实
+- **对话自动贴底**：流式输出、气泡高度变化、加载气泡移除后都会重新贴到底部，
+  不会出现「完成后下方一大片空白、要往上拉找对话」
 - **作品级提示词**：✨ 指令 →「设置作品提示词…」可为单个作品定制写作风格与尺度
 - **RAG 语义搜索**：说「找出所有描写下雨的段落」，AI 通过 TF-IDF 搜索所有章节找到最相关段落
 - **长期记忆**：对话历史自动持久化，关了再开还记得；AI 输出中的 HTML 标签写入时自动清理为 Markdown
@@ -221,7 +236,7 @@ ReWrite 使用**工作空间级 Git 仓库**——所有作品共享一个 `work
 
 ### 导入
 
-启动页 → 导入 → 选择文件（支持 `.writepack`、ZIP、Git 仓库 URL、Markdown、Word、纯文本）
+启动页 → 导入 → 选择文件（支持 `.writepack`、ZIP、Git 仓库 URL、Markdown、纯文本）
 
 ---
 
@@ -238,8 +253,8 @@ ReWrite 使用**工作空间级 Git 仓库**——所有作品共享一个 `work
 ### 自动快照备份
 
 - 打字即保存：每次按键直接写入文件
-- 定时快照：每 5 分钟自动备份到 `.autosave/snapshots/`
-- 保留最近 10 份快照
+- 定时快照：每 5 分钟为**最近修改过**的章节备份到 `.autosave/snapshots/`
+- 留存策略：按章节编号分组，**每个章节保留最近 5 份**；改名、重排、删章后遗留的旧快照也会被自动回收
 
 ### AI 对话回溯
 
@@ -252,48 +267,113 @@ ReWrite 使用**工作空间级 Git 仓库**——所有作品共享一个 `work
 
 ```
 ReWrite/
-├── src/                   # 源代码
-│   ├── main.py            # 入口
-│   ├── launcher/          # 启动页（作品选择）
-│   ├── editor/            # 编辑器核心
-│   │   ├── editor_widget.py  # 富文本编辑器
-│   │   ├── window.py         # 编辑器主窗口
-│   │   ├── chapter_list.py   # 章节列表
-│   │   ├── search.py         # 全局搜索
-│   │   ├── autosave/         # 实时写入 + 快照
-│   │   └── modules/          # 可选模块
-│   │       ├── characters.py     # 人物卡
-│   │       ├── outline.py        # 大纲
-│   │       ├── timeline.py       # 时间线
-│   │       ├── worldview.py      # 世界观
-│   │       ├── map.py            # 地图
-│   │       └── ai_assistant/     # AI 助手
-│   │           ├── module.py         # 模块入口 + Qt 桥接
-│   │           ├── agent.py          # 对话管理 + 长期记忆
-│   │           ├── orchestrator.py   # AI 流程控制器（零 Qt 依赖）
-│   │           ├── providers.py      # API 调用（DeepSeek/Claude/OpenAI）
-│   │           ├── worker.py         # 后台线程（流式推理）
+├── src/                      # 源代码（82 个 .py）
+│   ├── main.py               # 入口：主题/字体/图标 → Workspace → 启动页
+│   ├── launcher/             # 启动页（作品卡片、新建、导入）
+│   ├── editor/               # 编辑器核心
+│   │   ├── editor_widget.py     # 富文本编辑器
+│   │   ├── window.py            # 编辑器主窗口（模块装配 + Dock 布局）
+│   │   ├── chapter_list.py      # 章节列表面板
+│   │   ├── search.py            # 全局搜索（Ctrl+Shift+F）
+│   │   ├── sync.py              # 文档 ↔ 编辑器同步
+│   │   ├── statusbar.py         # 状态栏（字数统计）
+│   │   ├── toolbar.py           # 工具栏
+│   │   ├── autosave/            # engine.py 实时写入+快照；recovery.py 崩溃恢复
+│   │   ├── annotations/         # AI 批注：manager / gutter / panel
+│   │   └── modules/             # 可选功能模块（统一 BaseModule 接口）
+│   │       ├── chapters.py          # 章节（必选）
+│   │       ├── characters.py        # 人物卡（无限层级树）
+│   │       ├── outline.py           # 大纲（树形 + 文档双视图）
+│   │       ├── timeline.py          # 时间线（纪元+年号智能排序）
+│   │       ├── worldview.py         # 世界观（所见即所得 Markdown）
+│   │       ├── map.py               # 地图（QGraphicsView，节点/边界/路线）
+│   │       ├── md_document.py       # 自研无损 Markdown 导出器
+│   │       └── ai_assistant/        # AI 助手
+│   │           ├── module.py            # 模块入口 + Qt 桥接
+│   │           ├── agent.py             # 对话管理 + 长期记忆
+│   │           ├── orchestrator.py      # AI 流程控制器（零 Qt 依赖）
+│   │           ├── providers.py         # API 调用（DeepSeek/Claude/OpenAI）
+│   │           ├── worker.py            # 后台线程（流式推理）
 │   │           ├── prompt_templates.py  # 提示词模板
-│   │           ├── contexts.py       # 上下文收集
-│   │           ├── rag.py            # RAG 语义搜索（TF-IDF）
+│   │           ├── contexts.py          # 上下文收集
+│   │           ├── rag.py               # RAG 语义搜索（TF-IDF）
+│   │           ├── undo_stack.py        # AI 写操作快照 / 撤回
 │   │           ├── markdown_render.py   # Markdown → HTML
-│   │           ├── memory_editor.py  # 长期记忆编辑器
-│   │           ├── annotation_manager.py  # AI 批注管理
-│   │           ├── skills/           # Skill 系统（30 个）
-│   │           └── ui/
-│   │               ├── chat_panel.py     # AI 聊天面板
-│   │               └── annotation_list.py # 批注列表
-│   ├── storage/           # 存储层（路径、Git、导入导出）
-│   ├── settings/          # 设置页面
-│   ├── import_export/     # 导入导出（.writepack / Markdown / Word）
-│   └── ui/                # 主题 + 自定义标题栏
-├── assets/                # 图标
-├── run.bat                # 一键启动脚本
+│   │           ├── memory_editor.py     # 长期记忆编辑器
+│   │           ├── skills/              # Skill 系统（32 个）
+│   │           └── ui/chat_panel.py     # AI 聊天面板（确认气泡 / 停止）
+│   ├── storage/              # 路径、工作空间、Git、元数据
+│   ├── settings/             # 设置页（通用 / AI / Git / 外观）
+│   ├── import_export/        # 导入导出（.writepack / Markdown / 纯文本）
+│   ├── ui/                   # 主题 + 自定义标题栏 + 动画
+│   └── utils/                # 字数统计 + 日志（logging_setup.py）
+├── tests/                    # 单元测试（标准库 unittest，无需额外依赖）
+├── scripts/                  # 开发辅助脚本（打包、校验、本地实验）
+├── assets/                   # 图标
+├── docs/release-notes/       # 每版发布说明（本地保留，不入库）
+├── ReWrite.spec              # PyInstaller 打包配置
+├── requirements.txt          # 唯一依赖：PySide6
+├── run.bat                   # 一键启动脚本
 └── README.md
 
-works/                     # 作品（本地，Git 仓库）
-~/.rewrite/                # 个人配置（Token / API Key / 设置）
+works/                        # 作品数据（本地 Git 仓库，不入库）
+~/.rewrite/                   # 个人配置（Token / API Key / 设置 / 日志）
 ```
+
+---
+
+## 测试
+
+测试只用标准库 `unittest`，**不引入 pytest 等新依赖**，也不需要启动 GUI（只覆盖不依赖 Qt 事件循环的纯逻辑）。
+
+```bash
+# 全部测试
+python -m unittest discover -s tests -t .
+
+# 单文件 + 详细输出
+python -m unittest tests.test_snapshots -v
+```
+
+| 测试文件 | 覆盖内容 |
+| -------- | -------- |
+| `test_snapshots.py` | 快照分组与留存（回归「改名后旧快照永不回收」） |
+| `test_chapter_resolver.py` | 章节名宽松解析（「第一章」/「第7章」都能命中；「第1章」不误撞「第11章」） |
+| `test_ai_continuation.py` | 续写轮必须携带原始对话（回归「连续写作字数骤降」） |
+| `test_ai_module_gating.py` | 工具按启用模块收窄（回归「关了的功能还在写」） |
+| `test_ai_reasoning_memory.py` | 思考过程只显示不进上下文、🧠 不堆叠、压缩记忆保留任务原点 |
+| `test_skill_registry.py` | 32 个 Skill 契约、名称容错匹配、OpenAI/Claude 工具 schema |
+| `test_skill_path_safety.py` | AI 提供的 `work` 参数不能越出 `works/`（路径穿越防御） |
+| `test_meta.py` | `work.json` 读写往返、损坏/未知字段容错 |
+| `test_markdown_render.py` | AI 输出的 Markdown → HTML，含 HTML 注入转义 |
+| `test_stats.py` | 中英文字数统计与格式化 |
+| `test_logging_setup.py` | 日志命名空间、无副作用、落盘与级别过滤 |
+| `test_work_io.py` | 目录名 slug 化 |
+
+所有落盘测试都在临时目录里跑，**不会碰 `works/` 里的真实作品**。
+
+新增 Skill 或修改留存策略时，请同步更新对应测试与本文档的表格。
+
+---
+
+## 日志与排错
+
+日志写在 `%USERPROFILE%\.rewrite\logs\rewrite.log`，单文件 1 MB、保留 3 份历史（合计约 4 MB）。
+
+- **默认 INFO 级**：启动、AI 请求失败、数据读写失败、快照写入/清理失败都会记录
+- **未捕获异常**会连同堆栈一起写进日志，界面闪退后可以回查原因
+- 想要更详细（含调试细节）：
+
+  ```bash
+  set REWRITE_LOG_LEVEL=DEBUG
+  ```
+
+- 想换日志目录：
+
+  ```bash
+  set REWRITE_LOG_DIR=D:\我的日志
+  ```
+
+- 日志模块本身失败时只降级为控制台输出，**不会让程序起不来**
 
 ---
 
@@ -307,6 +387,8 @@ works/                     # 作品（本地，Git 仓库）
 | QGraphicsView | 地图引擎                          |
 | TF-IDF        | RAG 语义检索                      |
 | Git           | 版本管理                          |
+| unittest      | 单元测试（标准库，零额外依赖）     |
+| logging       | 运行日志（标准库轮转）             |
 
 ---
 
