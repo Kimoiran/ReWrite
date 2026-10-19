@@ -27,8 +27,63 @@ def strip_reasoning(text: str) -> str:
     return _REASONING_BLOCK_RE.sub("", text).strip()
 
 
+_MAX_ARG_CONTENT = 1200   # 历史里单次工具调用携带的正文，最多保留这么多字符
+
+
+def _shrink_tool_calls(msg: dict) -> dict:
+    """压缩历史消息里工具调用携带的大段正文。
+
+    一次 ``update_chapter`` 的 arguments 里装着整章（几千字），而这些消息会
+    在整个任务期间留在上下文中。写过三四章之后上下文就被顶满——一旦超限，
+    服务端通常**从头裁**，最先丢掉的恰恰是用户那句「每章 5000 字」，
+    于是后面每一章都越写越短。
+
+    这里把旧调用里的正文截断成摘要（保留前后文与 assistant/tool 配对），
+    真正写入文件的完整内容不受影响。
+    """
+    tool_calls = msg.get("tool_calls")
+    if not isinstance(tool_calls, list) or not tool_calls:
+        return msg
+
+    changed = False
+    new_calls = []
+    for tc in tool_calls:
+        fn = (tc or {}).get("function") or {}
+        raw = fn.get("arguments")
+        if not isinstance(raw, str) or len(raw) <= _MAX_ARG_CONTENT:
+            new_calls.append(tc)
+            continue
+        try:
+            args = json.loads(raw)
+        except Exception:
+            new_calls.append(tc)
+            continue
+        if not isinstance(args, dict):
+            new_calls.append(tc)
+            continue
+
+        shrunk = dict(args)
+        local_changed = False
+        for key in ("content", "text", "body"):
+            value = shrunk.get(key)
+            if isinstance(value, str) and len(value) > _MAX_ARG_CONTENT:
+                shrunk[key] = (
+                    value[:_MAX_ARG_CONTENT]
+                    + f"\n…（此处省略 {len(value) - _MAX_ARG_CONTENT} 字，"
+                      f"完整内容已写入文件）")
+                local_changed = True
+        if local_changed:
+            changed = True
+            new_calls.append({**tc, "function": {
+                **fn, "arguments": json.dumps(shrunk, ensure_ascii=False)}})
+        else:
+            new_calls.append(tc)
+
+    return {**msg, "tool_calls": new_calls} if changed else msg
+
+
 def sanitize_messages(messages: list) -> list:
-    """构造 API 请求前清理消息：剥离思考过程，丢弃因此变空的助手消息。
+    """构造 API 请求前清理消息：剥离思考过程、压缩超长的工具调用正文。
 
     保留带 ``tool_calls`` 的消息（否则 assistant/tool 配对会被破坏）。
     """
@@ -42,7 +97,8 @@ def sanitize_messages(messages: list) -> list:
         if (not stripped and content.strip() and not msg.get("tool_calls")
                 and msg.get("role") == "assistant"):
             continue                     # 这条消息除了思考过程什么都没有
-        cleaned.append(msg if stripped is content else {**msg, "content": stripped})
+        fixed = msg if stripped is content else {**msg, "content": stripped}
+        cleaned.append(_shrink_tool_calls(fixed))
     return cleaned
 
 SKILLS = get_all_skills()
@@ -546,7 +602,8 @@ def get_proposals_only(agent, message: str, context: str = ""):
         return agent.send_message(message, current_context=context)
 
     # 工具铁律为硬编码(见 build_system_prompt),自定义提示词只能追加其后
-    system = build_system_prompt(config, getattr(agent, "enabled_modules", None))
+    system = build_system_prompt(config, getattr(agent, "enabled_modules", None),
+                                 getattr(agent, "length_rule", ""))
     if context:
         system += f"\n\n## 当前作品上下文\n{context}"
 

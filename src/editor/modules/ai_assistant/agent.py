@@ -16,6 +16,9 @@ class AIAgent:
         # 本作品启用的模块集合（由 AIAssistantModule 按 work.json 注入）。
         # None = 不做限制（全局/测试场景）。
         self.enabled_modules = None
+        # 用户明确指定的篇幅要求（如「每章 5000 字」）。注入系统提示词，
+        # 使其成为贯穿任务的全局规则，不依赖对话历史是否还在。
+        self.length_rule = ""
 
         # 加载历史记忆
         if work_name:
@@ -109,7 +112,7 @@ class AIAgent:
         provider = self._get_provider()
 
         # 工具铁律为硬编码(见 build_system_prompt),自定义提示词只能追加其后
-        system = build_system_prompt(self.config, self.enabled_modules)
+        system = build_system_prompt(self.config, self.enabled_modules, self.length_rule)
         if current_context:
             system = f"{system}\n\n## 当前作品上下文\n{current_context}"
 

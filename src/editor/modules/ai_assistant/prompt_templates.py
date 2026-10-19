@@ -24,11 +24,10 @@ _WORKFLOW = """工作流程（每次处理用户请求时遵循）：
 - 禁止在没有调工具时说「✅已完成」「已修改」→ 没调工具 = 没做事
 - 用户要求「写/续写/重写/修改正文」→ 必须调用 update_chapter，把完整正文放进 content 参数；
   聊天回复只放 1-2 句简短说明，禁止把大段正文直接贴在聊天里
-- 用户指定了字数或篇幅（如「5000 字」）→ 允许约 ±1000 字的浮动，不必为凑数注水；
-  但如果明显少于目标（不足目标的 80%），必须继续调用 update_chapter 补写，
-  直到进入目标区间再收尾——禁止只写一小段就宣告完成
-- 连续写多章时，保持各章篇幅基本一致：不要第一章 5000 字、下一章只有 1000 字
-- 篇幅不够时把这一章写厚（加场景、加细节、加对话），不要重复啰嗦或堆砌形容词
+- 用户指定了字数或篇幅（如「5000 字」）→ 这是一条贯穿整个任务的全局规则：
+  开工就按该体量铺开场景/细节/对话，不要先写一小段再回头补
+- 允许约 ±1000 字的自然浮动，不必为凑数注水；也不要在过程中反复核算字数
+- 连续写多章时各章体量保持一致：不要第一章写足、后面越写越短
 - 用户要求「写/续写/重写章节全文」而章节不存在 → 先 create_chapter 再 update_chapter
 - 用户要求创建人物/设定/事件 → 必须用对应的 create_ 工具，回复里同样只放说明
 - 章节名不必逐字照抄：「第一章」「第1章」「第1章 在孤儿院的日子」都能匹配到同一章
@@ -78,6 +77,70 @@ def build_tool_law(modules=None) -> str:
     return f"{build_skill_map(modules)}\n\n{_WORKFLOW}"
 
 
+# ─────────────────────────────────────────────────────────────
+# 篇幅要求 → 全局规则
+#
+# 用户明确说了字数（如「每章 5000 字」）时，这条要求**必须**进入系统提示词，
+# 而不是只躺在对话历史里。原因：历史会被 history[-40:] 截断、被记忆压缩摘要、
+# 上下文过长时还可能被服务端从头裁掉——一旦被裁，AI 就"忘了要写多长"，
+# 表现为越写越少。系统提示词每次请求都在，且位于最前，最不容易被丢。
+# ─────────────────────────────────────────────────────────────
+
+_RANGE_RE = r"(\d{2,6})\s*[-~～到至]\s*(\d{2,6})\s*字"
+_CHAPTER_RE = r"每章\s*(\d{2,6})\s*字"
+_PLAIN_RE = r"(\d{2,6})\s*字"
+_EN_RE = r"(\d{2,6})\s*(?:words|word)\b"
+
+
+def extract_length_rule(text: str) -> str:
+    """从用户消息里提取篇幅要求，返回一句可直接注入提示词的规则。
+
+    没提到字数时返回空串（调用方据此保留上一条规则或不注入）。
+    """
+    import re
+    t = (text or "").strip()
+    if not t:
+        return ""
+
+    m = re.search(_RANGE_RE, t)
+    if m:
+        lo, hi = int(m.group(1)), int(m.group(2))
+        if lo > hi:
+            lo, hi = hi, lo
+        return f"篇幅区间：约 {lo}–{hi} 字（落在这个区间内即可）"
+
+    m = re.search(_CHAPTER_RE, t)
+    if m:
+        n = int(m.group(1))
+        return f"每一章目标篇幅：约 {n} 字（允许 ±1000 字自然浮动）"
+
+    m = re.search(_PLAIN_RE, t) or re.search(_EN_RE, t, re.IGNORECASE)
+    if m:
+        n = int(m.group(1))
+        return f"目标篇幅：约 {n} 字（允许 ±1000 字自然浮动）"
+
+    return ""
+
+
+def build_length_block(length_rule: str) -> str:
+    """把篇幅要求包装成「全局规则」段落。未提供时返回空串。"""
+    rule = (length_rule or "").strip()
+    if not rule:
+        return ""
+    return (
+        "## 本次写作任务的篇幅要求（全局规则，贯穿整个任务）\n"
+        f"- {rule}\n"
+        "- 这是一条**开工前就已确定**的硬指标：动笔时就按这个体量铺开场景、细节与对话，"
+        "而不是先写一小段再回头补。\n"
+        "- 不需要在写作过程中反复核算字数，也不要为凑数注水、重复啰嗦或堆砌形容词；\n"
+        "  一次就写到目标体量附近，然后自然收尾。\n"
+        "- 连续写多章时，上面的篇幅要求对**每一章**都成立，"
+        "不要第一章写足、后面越写越短。\n"
+        "- 例外：如果用户当次明确要求「简短」「只要一段」「先给个提纲」，"
+        "以当次要求为准。"
+    )
+
+
 # 兜底常量：不限定模块时的完整铁律（供文档/测试引用）
 SKILL_MAP = build_tool_law(None)
 TOOL_LAW = SKILL_MAP
@@ -86,20 +149,27 @@ DEFAULT_SYSTEM_PROMPT = ("你是 ReWrite 写作助手。你必须通过工具调
                          "而不是通过打字描述操作。\n\n" + SKILL_MAP)
 
 
-def build_system_prompt(config: dict, modules=None) -> str:
+def build_system_prompt(config: dict, modules=None, length_rule: str = "") -> str:
     """统一的系统提示词构建(唯一入口):
 
     - 工具铁律为硬编码,始终置于最前,不可被任何自定义覆盖;
     - 工具清单按作品启用的模块收窄(modules),关掉的模块不会出现在清单里;
-    - 设置里的自定义提示词追加在铁律之后;
+    - 用户明确指定的篇幅要求(length_rule)以「全局规则」形式紧随铁律注入,
+      每条请求都会带上,因此不会因对话历史被截断/压缩而失效;
+    - 设置里的自定义提示词追加在其后;
     - 留空时使用内置默认提示词(已含铁律)。
     """
     custom = (config.get("system_prompt") or "").strip()
     law = build_tool_law(modules)
+    length_block = build_length_block(length_rule)
+    if length_block:
+        law = f"{law}\n\n{length_block}"
+    identity = ("你是 ReWrite 写作助手。你必须通过工具调用来操作数据，"
+                "而不是通过打字描述操作。")
     if custom:
         return f"{law}\n\n你是 ReWrite 写作助手。\n{custom}"
-    return ("你是 ReWrite 写作助手。你必须通过工具调用来操作数据，"
-            "而不是通过打字描述操作。\n\n" + law)
+    return f"{identity}\n\n{law}"
+
 
 
 def analyze_text_prompt(text: str) -> str:

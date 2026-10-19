@@ -74,7 +74,8 @@ class StreamingProposalWorker(QThread):
 
             # 工具铁律为硬编码(见 build_system_prompt),自定义提示词只能追加其后
             system = build_system_prompt(self.agent.config,
-                                         getattr(self.agent, "enabled_modules", None))
+                                         getattr(self.agent, "enabled_modules", None),
+                                         getattr(self.agent, "length_rule", ""))
             if self.context:
                 system += f"\n\n## 当前作品上下文\n{self.context}"
             if self.extra_system:
@@ -275,7 +276,8 @@ class ReasoningWorker(QThread):
 
             # 工具铁律为硬编码(见 build_system_prompt),自定义提示词只能追加其后
             system = build_system_prompt(self.agent.config,
-                                         getattr(self.agent, "enabled_modules", None))
+                                         getattr(self.agent, "enabled_modules", None),
+                                         getattr(self.agent, "length_rule", ""))
             if self.context:
                 system += f"\n\n## 当前作品上下文\n{self.context}"
 

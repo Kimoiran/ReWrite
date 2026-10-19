@@ -377,6 +377,17 @@ class AIAssistantModule(BaseModule):
             self.agent.enabled_modules = self._work_modules()
         except Exception:
             logger.debug("刷新启用模块失败", exc_info=True)
+        # 篇幅要求 → 全局规则：用户这次明确说了字数就更新并常驻系统提示词；
+        # 没说则沿用上一次（写连续章节时不必每章重述）。这样即使对话历史被
+        # 截断/压缩/服务端裁剪，AI 仍然知道该写多长。
+        try:
+            from .prompt_templates import extract_length_rule
+            rule = extract_length_rule(message)
+            if rule:
+                self.agent.length_rule = rule
+                logger.info("篇幅规则更新: %s", rule)
+        except Exception:
+            logger.debug("解析篇幅要求失败", exc_info=True)
         self._streaming_bubble = None
         self._streaming_text = ""
         self._round_reasoning = ""
