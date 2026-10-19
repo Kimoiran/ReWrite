@@ -177,6 +177,13 @@ class LoadingBubble(QFrame):
         self._timer.setInterval(400)
         self._timer.timeout.connect(self._tick)
 
+        # 推理文本合并刷新：片段可能每秒来几十个，每个都 setText 会反复触发布局
+        self._pending_reasoning = ""
+        self._reasoning_flush = QTimer(self)
+        self._reasoning_flush.setSingleShot(True)
+        self._reasoning_flush.setInterval(120)
+        self._reasoning_flush.timeout.connect(self._flush_reasoning)
+
     def start(self):
         self._dot_count = 0
         self._timer.start()
@@ -184,27 +191,39 @@ class LoadingBubble(QFrame):
 
     def stop(self):
         self._timer.stop()
+        self._reasoning_flush.stop()
+        self._flush_reasoning()   # 收尾时把最后一段推理补上，避免丢尾巴
 
     def set_reasoning(self, text: str):
-        """增量显示 AI 的推理过程。
+        """增量显示 AI 的推理过程（合并刷新，避免每个片段都重排一次）。
 
         旧实现写成 ``setText(f"🧠 {current}{text}")``：每来一个流式片段，
         就把「🧠 + 已有全文」重新拼一次，于是屏幕上堆出成百上千个大脑图标。
-        现在标题只在头部出现一次，正文按增量追加，并自动滚到最后一行。
+        现在标题只在头部出现一次，正文按增量追加，并合批刷新。
         """
         if not text or not text.strip():
             self.reasoning_scroll.setVisible(False)
             self.reasoning_header.setVisible(False)
             return
-        current = self.reasoning_content.text()
-        self.reasoning_content.setText(merge_reasoning_text(current, text))
+        self._pending_reasoning += text
+        if not self._reasoning_flush.isActive():
+            self._reasoning_flush.start()
+
+    def _flush_reasoning(self):
+        chunk = self._pending_reasoning
+        self._pending_reasoning = ""
+        if not chunk:
+            return
+        self.reasoning_content.setText(
+            merge_reasoning_text(self.reasoning_content.text(), chunk))
         self.reasoning_header.setVisible(True)
         self.reasoning_scroll.setVisible(True)
-        # 让最新的思考内容始终可见
         sb = self.reasoning_scroll.verticalScrollBar()
         QTimer.singleShot(0, lambda: sb.setValue(sb.maximum()))
 
     def clear_reasoning(self):
+        self._reasoning_flush.stop()
+        self._pending_reasoning = ""
         self.reasoning_content.setText("")
         self.reasoning_scroll.setVisible(False)
         self.reasoning_header.setVisible(False)
@@ -212,7 +231,7 @@ class LoadingBubble(QFrame):
     @property
     def reasoning_text(self) -> str:
         """当前累计的推理文本（供结束时并入消息，便于回看）。"""
-        return self.reasoning_content.text()
+        return self.reasoning_content.text() + self._pending_reasoning
 
     def _tick(self):
         self._dot_count = (self._dot_count % 3) + 1
@@ -639,9 +658,17 @@ class ChatPanel(QDockWidget):
         QTimer.singleShot(_delay + 120, self._stick_to_bottom)
 
     def _scroll_to_bottom_now(self):
-        """立即滚动到底部（用于流式更新，先处理待布局再滚）。"""
-        QApplication.processEvents()
+        """把消息区贴到底部（流式更新后调用）。
+
+        ⚠️ 这里**绝对不能**调用 ``QApplication.processEvents()``。
+        AI 的流式片段通过**队列化信号**从 worker 线程送到主线程；
+        在槽函数里 processEvents 会把队列中后面的片段当场重入处理，
+        递归深度 = 积压的片段数。一章 5000 字有几百个片段，递归几百层就爆栈
+        ——Windows 上是 ``0xc00000fd``，崩溃模块显示 Qt6Gui.dll，
+        用户看到的就是「update 的时候卡死然后软件关闭」。
+        """
         self._stick_to_bottom()
+        QTimer.singleShot(0, self._stick_to_bottom)
 
     def remove_session(self):
         """删除从最近一次用户消息起的全部气泡(用于撤回),保留更早的对话。"""
@@ -698,12 +725,25 @@ class ChatPanel(QDockWidget):
         return bubble
 
     def update_streaming(self, bubble, accumulated_text: str, reasoning: str = ""):
-        """用累积的文本更新流式气泡；reasoning 非空时在其上方保留思考块。"""
-        from ..markdown_render import markdown_to_html
-        html = markdown_to_html(accumulated_text)
-        if reasoning:
-            html = self._reasoning_block_html(reasoning) + html
-        bubble.set_content(html)
+        """用累积的文本更新流式气泡；reasoning 非空时在其上方保留思考块。
+
+        带重入保护：流式片段是队列化信号，若上一帧还没渲染完就跳过本帧
+        （下一帧会用最新累积文本重绘，视觉上仍是打字机效果），
+        避免渲染嵌套把事件循环和调用栈一起拖垮。
+        """
+        if bubble is None:
+            return
+        if getattr(self, "_rendering_stream", False):
+            return
+        self._rendering_stream = True
+        try:
+            from ..markdown_render import markdown_to_html
+            html = markdown_to_html(accumulated_text)
+            if reasoning:
+                html = self._reasoning_block_html(reasoning) + html
+            bubble.set_content(html)
+        finally:
+            self._rendering_stream = False
         self._scroll_to_bottom_now()
 
     def show_loading(self):
@@ -711,7 +751,6 @@ class ChatPanel(QDockWidget):
         self.messages_layout.addWidget(self._loading_bubble)
         self._loading_bubble.start()
         self._scroll_to_bottom()
-        QApplication.processEvents()
 
     def hide_loading(self):
         if self._loading_bubble:

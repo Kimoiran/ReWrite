@@ -119,12 +119,28 @@ class PromptFilteringTest(unittest.TestCase):
 
 
 class LengthRuleTest(unittest.TestCase):
-    """字数规则必须写进硬编码铁律，避免被自定义提示词覆盖掉。"""
+    """字数规则必须写进硬编码铁律，避免被自定义提示词覆盖掉。
+
+    规则是「允许浮动、但明显不足要补写」，不是硬卡字数：
+    AI 不必为凑数注水，但也不能只写一小段就收工。
+    """
 
     def test_length_rule_present(self):
         law = build_tool_law(CHAPTER_ONLY)
         self.assertIn("5000 字", law)
-        self.assertIn("补写剩余部分", law)
+        self.assertIn("±1000 字", law)
+
+    def test_shortfall_must_be_topped_up(self):
+        law = build_tool_law(CHAPTER_ONLY)
+        self.assertIn("80%", law)
+        self.assertIn("补写", law)
+
+    def test_multi_chapter_consistency_rule(self):
+        self.assertIn("保持各章篇幅基本一致", build_tool_law(CHAPTER_ONLY))
+
+    def test_padding_is_discouraged(self):
+        """「不要注水」和「不足要补写」是配套的，缺一条就会跑偏。"""
+        self.assertIn("注水", build_tool_law(CHAPTER_ONLY))
 
     def test_existing_chapters_guidance_present(self):
         law = build_tool_law(CHAPTER_ONLY)
