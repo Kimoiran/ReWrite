@@ -1,33 +1,60 @@
 """AI Agent — 对话历史持久化，跨会话记忆。"""
 
-from .providers import create_provider
+from .providers import create_provider, strip_reasoning, _summarize_tool_calls
 from .prompt_templates import build_system_prompt
 from src.settings.ai_config import load_chat_history, save_chat_history
 
 
 def filter_substantive_history(messages: list) -> list:
-    """把一轮里的工具执行轨迹过滤成「有信息量」的对话，供持久化记忆。
+    """把一轮里的工具执行轨迹整理成「有信息量」的对话，供持久化记忆。
 
-    为什么需要：工具回执（「✅ 已修改章节」）只有十几个字，却和真正的对话
-    一样占一条消息。写一章往往产生好几条回执，几十轮下来历史里全是回执骨架，
-    剧情、文风、用户要求全被挤出窗口——AI 每轮看到的上下文几乎一样，
-    于是输出也一样，最终表现为**同一章被反复写入的死循环**。
+    区分两件事：
 
-    保留：用户消息、有正文的 assistant 消息。
-    丢弃：tool 回执、只带 tool_calls 而正文为空的 assistant 消息。
+    - **思考过程**（推理原文）：不保存。它又长又容易被模型当成范例模仿。
+    - **思考的结果**（这一轮做了什么、拿到了什么）：**必须保留**。
+      否则下一轮 AI 不记得「已经读过章节列表、里面是哪些章」「已经写过第1章」，
+      只好再读一遍、再写一遍——这正是「一直读章节列表」那类死循环的根源。
+
+    所以 tool_calls 轮次不再整条丢弃，而是**每一条都保留成一条记录**，
+    并把对应的工具结果原样附上（不压缩、不去重）：
+
+    ``[工具记录] get_chapters：已读取章节列表 {"chapters": [...]}``
+    ``[工具记录] update_chapter "第1章" 5000字符：✅ 已修改章节``
+
+    唯一被去掉的是**推理原文**（推理又长又容易被模仿）。
     """
-    kept = []
+    results = {}
+    for msg in messages or []:
+        if msg.get("role") == "tool":
+            results[msg.get("tool_call_id")] = (msg.get("content") or "").strip()
+
+    kept: list = []
     for msg in messages or []:
         role = msg.get("role")
+
         if role == "tool":
-            continue
+            continue                      # 回执已合并进上一行的记录
+
         if role == "assistant" and msg.get("tool_calls"):
-            continue                      # 工具调用轨迹，正文为空
+            body = strip_reasoning(msg.get("content") or "").strip()
+            line = _summarize_tool_calls(msg["tool_calls"])
+            outs = []
+            for tc in msg["tool_calls"]:
+                out = results.get((tc or {}).get("id"))
+                if out:
+                    outs.append(out)
+            if outs:
+                line += "：" + "；".join(outs)
+            text = f"{body}\n\n{line}".strip() if body else line
+            kept.append({"role": "assistant", "content": text})
+            continue
+
         content = msg.get("content")
         if role == "assistant" and (not isinstance(content, str) or not content.strip()):
             continue
         kept.append(msg)
     return kept
+
 
 
 class AIAgent:

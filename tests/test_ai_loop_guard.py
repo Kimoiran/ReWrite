@@ -23,16 +23,49 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 class FilterSubstantiveHistoryTest(unittest.TestCase):
-    def test_tool_acks_are_dropped(self):
+    """历史持久化：丢推理原文，**保留每一条动作及其结果**。"""
+
+    def test_action_and_result_are_kept(self):
         messages = [
             {"role": "user", "content": "写第一章"},
-            {"role": "assistant", "content": "", "tool_calls": [
-                {"id": "1", "type": "function",
-                 "function": {"name": "update_chapter", "arguments": "{}"}}]},
+            {"role": "assistant", "content": "<!--REASONING-->\n我先想想\n<!--/REASONING-->",
+             "tool_calls": [{"id": "1", "type": "function",
+                             "function": {"name": "update_chapter", "arguments": "{}"}}]},
             {"role": "tool", "tool_call_id": "1", "content": "✅ 已修改章节「第一章」"},
         ]
         kept = filter_substantive_history(messages)
-        self.assertEqual([m["role"] for m in kept], ["user"])
+        self.assertEqual([m["role"] for m in kept], ["user", "assistant"])
+        record = kept[1]["content"]
+        self.assertIn("update_chapter", record)      # 做了什么
+        self.assertIn("已修改章节", record)           # 结果
+        self.assertNotIn("我先想想", record)          # 推理原文被去掉
+
+    def test_read_result_data_preserved(self):
+        """读到的数据要留在记忆里，否则下一轮 AI 会再读一遍（死循环）。"""
+        messages = [
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c", "type": "function",
+                 "function": {"name": "get_chapters", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c",
+             "content": "已读取章节列表\n{\"chapters\": [\"第一章 拜师引路\", \"第二章 师兄引路\"]}"},
+        ]
+        record = filter_substantive_history(messages)[0]["content"]
+        self.assertIn("第一章 拜师引路", record)
+        self.assertIn("第二章 师兄引路", record)
+
+    def test_every_round_is_kept_not_collapsed(self):
+        """27 轮动作就留 27 条记录——不做去重、不压成一行。"""
+        messages = [{"role": "user", "content": "写第一章，5000 字"}]
+        for i in range(27):
+            messages.append({"role": "assistant", "content": "", "tool_calls": [
+                {"id": f"c{i}", "type": "function",
+                 "function": {"name": "update_chapter", "arguments": "{}"}}]})
+            messages.append({"role": "tool", "tool_call_id": f"c{i}",
+                             "content": f"✅ 已修改章节「第一章」第{i}次"})
+        kept = filter_substantive_history(messages)
+        self.assertEqual(len(kept), 28)
+        self.assertEqual(kept[0]["content"], "写第一章，5000 字")
+        self.assertIn("第26次", kept[-1]["content"])   # 最后一次结果在
 
     def test_assistant_text_is_kept(self):
         messages = [
@@ -43,19 +76,6 @@ class FilterSubstantiveHistoryTest(unittest.TestCase):
     def test_empty_assistant_dropped(self):
         messages = [{"role": "assistant", "content": "   "}]
         self.assertEqual(filter_substantive_history(messages), [])
-
-    def test_large_loop_collapses_to_substance(self):
-        """27 轮工具往返只应留下真正的对话。"""
-        messages = [{"role": "user", "content": "写第一章，5000 字"}]
-        for _ in range(27):
-            messages.append({"role": "assistant", "content": "", "tool_calls": [
-                {"id": "c", "type": "function",
-                 "function": {"name": "update_chapter", "arguments": "{}"}}]})
-            messages.append({"role": "tool", "tool_call_id": "c",
-                             "content": "✅ 已修改章节「第一章 拜师引路」"})
-        kept = filter_substantive_history(messages)
-        self.assertEqual(len(kept), 1)
-        self.assertEqual(kept[0]["content"], "写第一章，5000 字")
 
     def test_empty_input(self):
         self.assertEqual(filter_substantive_history([]), [])

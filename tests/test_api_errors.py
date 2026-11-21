@@ -167,7 +167,15 @@ class ReadToolDataTest(unittest.TestCase):
         self.assertIn("已读取章节列表", content)
         self.assertIn("第一章 拜师引路", content)
 
-    def test_read_tool_data_is_truncated(self):
+    def test_read_tool_data_is_complete_by_default(self):
+        """动作结果要全部保留：默认不截断。"""
+        from src.editor.modules.ai_assistant.providers import tool_message_content
+        result = {"success": True, "content": "字" * 5000}
+        content = tool_message_content("read_chapter", result, "已读取章节")
+        self.assertGreater(len(content), 4900)
+        self.assertNotIn("[数据截断]", content)
+
+    def test_explicit_limit_still_works(self):
         from src.editor.modules.ai_assistant.providers import tool_message_content
         result = {"success": True, "content": "字" * 5000}
         content = tool_message_content("read_chapter", result, "已读取章节", limit=100)
