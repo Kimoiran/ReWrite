@@ -205,12 +205,18 @@ class CreateChapterSkill(Skill):
         md = make_chapter_md(safe_title, content)
 
         filepath.write_text(md, encoding="utf-8")
+        empty = not str(content or "").strip()
         return {"success": True, "title": safe_title, "order": next_order,
-                "path": str(filepath.relative_to(work))}
+                "path": str(filepath.relative_to(work)),
+                # 只建了标题、没有正文：调用方据此要求 AI 继续写，别把「建了空章」当完成
+                "empty": empty}
 
     def summarize(self, result, args=None):
         if result.get("success"):
-            return f"✅ 已创建章节「{result['title']}」（第 {result['order']} 章）"
+            msg = f"✅ 已创建章节「{result['title']}」（第 {result['order']} 章）"
+            if result.get("empty"):
+                msg += "（正文仍为空——下一步必须调用 update_chapter 写入完整正文）"
+            return msg
         return f"❌ 创建失败: {result.get('error')}"
 
 

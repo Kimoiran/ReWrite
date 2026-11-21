@@ -74,6 +74,11 @@ class AIAssistantModule(BaseModule):
         self._same_call_streak = 0
         # 本任务内已写过的章节 → 内容（用于拦截「写完又重写一遍」）
         self._written_this_task = {}
+        # 只建了标题、正文还空着的章节（模型容易误认为已完成）
+        self._empty_chapters = set()
+        self._empty_reply_retries = 0
+        self._body_retries = 0
+        self._fake_retries = 0
 
     # ── 生命周期 ──
 
@@ -449,6 +454,10 @@ class AIAssistantModule(BaseModule):
         self._last_call_sig = None
         self._same_call_streak = 0
         self._written_this_task = {}
+        self._empty_chapters = set()
+        self._empty_reply_retries = 0
+        self._body_retries = 0
+        self._fake_retries = 0
         self._streaming_bubble = None
         self._streaming_text = ""
         self._round_reasoning = ""
@@ -748,6 +757,16 @@ class AIAssistantModule(BaseModule):
                         logger.warning("检测到重复写入同一章且内容无变化,中断本任务")
                 else:
                     self._unchanged_streak = 0
+
+                # 记录「只建了标题、正文还空着」的章节：模型容易把它当完成而停手
+                if isinstance(result, dict) and result.get("success"):
+                    if name == "create_chapter":
+                        title = str(result.get("title") or "")
+                        if result.get("empty") and title:
+                            self._empty_chapters.add(title)
+                            logger.info("章节已建但正文为空，稍后要求继续: %s", title)
+                    elif name == "update_chapter":
+                        self._empty_chapters.clear()   # 正文已写入
                 desc = (self._orchestrator._describe_tool(name, a, result)
                         if self._orchestrator is not None else _describe_tool(name, a, result))
             touched.update(self._module_for_tool(name))
@@ -977,15 +996,69 @@ class AIAssistantModule(BaseModule):
             logger.warning("保存对话历史失败", exc_info=True)
         self._round_reasoning = ""
 
+    def _retry_task(self, w, instruction: str, tag: str = "↻"):
+        """同一个任务内再推一轮：给模型一条明确指令，然后继续工具循环。
+
+        用于两类「莫名中断」：模型返回空内容、或只建了章节标题却没写正文。
+        """
+        msgs = list(getattr(w, "messages", None) or [])
+        msgs.append({"role": "user", "content": instruction})
+        from .markdown_render import markdown_to_html
+        self.chat_panel.add_message(
+            "assistant", markdown_to_html(f"{tag} {instruction}"))
+        logger.info("自动续推: %s", instruction[:120])
+        self.chat_panel.show_loading()
+        self._streaming_bubble = None
+        self._streaming_text = ""
+        self._tool_loop(msgs, getattr(w, "system", "") or "")
+
     def _on_ai_response(self, w, response: str):
         if self._proposal_worker is not w and self._loop_worker is not w:
             return  # 旧任务延迟响应:忽略
         if getattr(self, "_stopped_flag", False):
             return  # 停止与完成竞争:以停止为准(已记录部分内容,不再重复记录)
         self.chat_panel.hide_loading()
+
+        # ① 伪造工具记录 = 声称做了其实没做：必须重来，别让它蒙混过去
+        if getattr(self, "_fake_retries", 0) < 2:
+            from .providers import looks_fabricated_tool_record
+            if looks_fabricated_tool_record(response):
+                self._fake_retries += 1
+                self._retry_task(
+                    w, "你刚才在回复里写了「[工具记录] …」，但并没有真正调用工具——"
+                       "那不是你的输出格式，也不代表操作已完成。"
+                       "请实际调用工具（写正文用 update_chapter），不要在回复里伪造工具记录。")
+                return
+
+        # ② 空回复 = 莫名中断：再推一次，别让任务无声结束
+        if not (response or "").strip() and getattr(self, "_empty_reply_retries", 0) < 2:
+            self._empty_reply_retries = getattr(self, "_empty_reply_retries", 0) + 1
+            self._retry_task(w, "你上一轮没有返回任何内容。请继续完成任务；"
+                                "如果是要写章节正文，请调用 update_chapter 把完整正文写进去。")
+            return
+
+        # ② 只建了空章节就说「已创建」= 假完成：要求把正文写完
+        pending = sorted(getattr(self, "_empty_chapters", set()))
+        if pending and getattr(self, "_body_retries", 0) < 2:
+            self._body_retries = getattr(self, "_body_retries", 0) + 1
+            target = pending[0]
+            extra = ""
+            rule = getattr(self.agent, "length_rule", "")
+            if rule:
+                extra = f"篇幅要求：{rule}。"
+            self._retry_task(
+                w, f"「{target}」目前只有标题、正文是空的。请立刻调用 update_chapter，"
+                   f"把这一章的完整正文写进去（{extra}一次写完整，不要分几段凑）。")
+            return
+
         # 思考过程并入最终消息：既能在界面上回看，也随历史持久化；
         # 发回模型前会被 providers.sanitize_messages 剥离，不占上下文。
         final_text = self._merge_reasoning(response)
+        # 重试后仍在伪造工具记录 → 明确标出来，别让用户以为真做了
+        from .providers import looks_fabricated_tool_record
+        if looks_fabricated_tool_record(response):
+            final_text = ("⚠️ 注意：下面的回复里写了「[工具记录]」，但**实际上没有执行任何操作**"
+                          "（那只是模型模仿出来的文字）。\n\n" + final_text)
         # 如果之前有流式气泡，用渲染后的最终内容替换它
         if self._streaming_bubble is not None:
             self._streaming_bubble.set_content(self.chat_panel.render_assistant(final_text))

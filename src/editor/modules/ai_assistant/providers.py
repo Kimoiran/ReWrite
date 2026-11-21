@@ -730,6 +730,17 @@ def friendly_api_error(err: str) -> str:
     return err
 
 
+def looks_fabricated_tool_record(text: str) -> bool:
+    """判断回复里是否「伪造」了工具记录。
+
+    ``[工具记录] ...`` 是本程序注入历史用的内部格式，模型的正文里**不该出现**。
+    一旦出现，说明它在模仿日志格式、声称做了其实没做的操作
+    （实测：模型写下 ``[工具记录] create_chapter "第十一章"：✅ 已创建章节``，
+    但日志里没有任何调用、磁盘上也没有那个文件）。
+    """
+    return "[工具记录]" in (text or "")
+
+
 def _check_fake_completion(content: str) -> str:
     """检测 AI 是否在没有调用工具的情况下假装完成了操作(或承诺行动但未执行)。"""
     if not content:
