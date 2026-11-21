@@ -69,6 +69,9 @@ class AIAssistantModule(BaseModule):
         # 死循环防护:连续「写入同一章但内容没变化」的计数
         self._unchanged_streak = 0
         self._loop_guard_tripped = False
+        # 连续同名同参调用计数（防「一直读章节列表」这类死循环）
+        self._last_call_sig = None
+        self._same_call_streak = 0
 
     # ── 生命周期 ──
 
@@ -441,6 +444,8 @@ class AIAssistantModule(BaseModule):
         # 新任务:复位死循环防护
         self._unchanged_streak = 0
         self._loop_guard_tripped = False
+        self._last_call_sig = None
+        self._same_call_streak = 0
         self._streaming_bubble = None
         self._streaming_text = ""
         self._round_reasoning = ""
@@ -651,10 +656,19 @@ class AIAssistantModule(BaseModule):
                     result = execute_skill(name, a)
                 desc = (self._orchestrator._describe_tool(name, a, result)
                         if self._orchestrator is not None else _describe_tool(name, a, result))
-            msgs.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": desc})
+            from .providers import tool_message_content
+            msgs.append({"role": "tool", "tool_call_id": tc.get("id", ""),
+                         "content": tool_message_content(name, result, desc)})
             self.chat_panel.add_message("assistant", markdown_to_html(f"📖 {desc}"))
+            # 同一个读工具被反复调用（模型拿不到数据就会一直重读）→ 熔断
+            if self._note_tool_call(name, a):
+                logger.warning("检测到重复调用 %s,中断本任务", name)
+                break
 
         # 2) 写工具:确认(或自动)后执行
+        if getattr(self, "_loop_guard_tripped", False):
+            self._abort_for_loop(msgs)
+            return
         if not writes:
             self._tool_loop(msgs, system)
             return
@@ -740,28 +754,54 @@ class AIAssistantModule(BaseModule):
             prefix = "⚡" if auto else "✅"
             self.chat_panel.add_message("assistant", markdown_to_html(f"{prefix} {desc}"))
         return msgs
+    def _note_tool_call(self, name: str, args) -> bool:
+        """记录一次工具调用；连续 3 次「同名同参」判定为死循环。
+
+        实测故障：模型反复调用 ``get_chapters``（一分钟 16 次），因为回执里
+        只有一句「已读取章节列表」，它始终没拿到章节名，只好一直重读。
+        回执内容已改成带真实数据；这里再加一道熔断兜底。
+        """
+        import json as _json
+        try:
+            sig = f"{name}|{_json.dumps(args or {}, ensure_ascii=False, sort_keys=True)}"
+        except (TypeError, ValueError):
+            sig = f"{name}|?"
+        if sig == getattr(self, "_last_call_sig", None):
+            self._same_call_streak = getattr(self, "_same_call_streak", 0) + 1
+        else:
+            self._last_call_sig = sig
+            self._same_call_streak = 1
+        if self._same_call_streak >= 3:
+            self._loop_guard_tripped = True
+        return bool(getattr(self, "_loop_guard_tripped", False))
+
+    def _abort_for_loop(self, msgs):
+        """死循环熔断：停止任务、把已发生的事记进历史、并告诉用户怎么继续。"""
+        self._loop_guard_tripped = False
+        self._same_call_streak = 0
+        self._unchanged_streak = 0
+        self._task_auto = False
+        self._auto_confirm = False
+        self.chat_panel.hide_loading()
+        self.chat_panel.set_busy(False)
+        from .markdown_render import markdown_to_html
+        self.chat_panel.add_message("assistant", markdown_to_html(
+            "⏹ **已自动停止**：AI 在重复调用同一个工具（比如反复读取章节列表），"
+            "任务没有推进。\n\n"
+            "常见原因：「作品提示词」太长或与写作无关，把工具行为带偏了。\n"
+            "可以直接给它下一步指令，例如「直接写第一章，5000 字」。"))
+        try:
+            from .agent import filter_substantive_history
+            self.agent.history.extend(filter_substantive_history(msgs))
+            self.agent._persist()
+        except Exception:
+            logger.warning("记录中断状态失败", exc_info=True)
+
     def _finish_after_writes(self, msgs, system, touched):
         self._refresh_panels(touched)
         # 死循环防护触发:不再续写,直接收手并告知用户
         if getattr(self, "_loop_guard_tripped", False):
-            self._loop_guard_tripped = False
-            self._unchanged_streak = 0
-            self._task_auto = False
-            self._auto_confirm = False
-            self.chat_panel.hide_loading()
-            self.chat_panel.set_busy(False)
-            self.chat_panel.add_message("assistant", markdown_to_html(
-                "⏹ **已自动停止**：AI 连续多轮写同一章，但内容和文件里完全一样（死循环）。\n\n"
-                "常见原因：\n"
-                "- 「作品提示词」过大或与写作无关（它会置顶注入，压过工具铁律）\n"
-                "- AI 没拿到目标篇幅/剧情上下文，只能一遍遍产出同样的短文\n\n"
-                "建议到 ✨ 指令 →「设置作品提示词…」检查那段提示词。"))
-            try:
-                from .agent import filter_substantive_history
-                self.agent.history.extend(filter_substantive_history(msgs))
-                self.agent._persist()
-            except Exception:
-                logger.warning("记录中断状态失败", exc_info=True)
+            self._abort_for_loop(msgs)
             return
         if getattr(self, "_stopped_flag", False):
             # 停止:已执行的操作记入记忆,不再发起续写
@@ -846,6 +886,11 @@ class AIAssistantModule(BaseModule):
         if getattr(self, "_stopped_flag", False):
             self._stopped_flag = False
             self.chat_panel.set_busy(False)
+            return
+
+        # 死循环熔断（例如反复读章节列表）
+        if getattr(self, "_loop_guard_tripped", False):
+            self._abort_for_loop(messages)
             return
 
         # 重置流式状态（准备接收续写回复的流式输出）

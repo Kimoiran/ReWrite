@@ -141,7 +141,8 @@ class MessageSequenceTest(unittest.TestCase):
             {"role": "tool", "tool_call_id": "c2", "content": "新回执"},
         ]
         cleaned = sanitize_messages(msgs)
-        logs = [m for m in cleaned if "[工具记录]" in (m.get("content") or "")]
+        logs = [m for m in cleaned
+                if m.get("role") == "assistant" and "[工具记录]" in (m.get("content") or "")]
         self.assertEqual(len(logs), 2)
         self.assertIn("旧回执", logs[0]["content"])
         self.assertIn("新回执", logs[1]["content"])
@@ -149,6 +150,44 @@ class MessageSequenceTest(unittest.TestCase):
     def test_serializable(self):
         msgs = [{"role": "user", "content": "写"}, self._assistant("c1")]
         json.dumps(sanitize_messages(msgs), ensure_ascii=False)   # 不应抛异常
+
+
+class ReadToolDataTest(unittest.TestCase):
+    """读工具的回执必须带真实数据。
+
+    真实故障：`get_chapters` 的回执只有一句「已读取章节列表」，模型拿不到章节名，
+    就反复重读——一分钟调了 16 次，表现为「一直在读章节列表、卡住」。
+    """
+
+    def test_read_tool_carries_data(self):
+        from src.editor.modules.ai_assistant.providers import tool_message_content
+        result = {"success": True,
+                  "chapters": [{"name": "第一章 拜师引路", "path": "chapters/0001.md"}]}
+        content = tool_message_content("get_chapters", result, "已读取章节列表")
+        self.assertIn("已读取章节列表", content)
+        self.assertIn("第一章 拜师引路", content)
+
+    def test_read_tool_data_is_truncated(self):
+        from src.editor.modules.ai_assistant.providers import tool_message_content
+        result = {"success": True, "content": "字" * 5000}
+        content = tool_message_content("read_chapter", result, "已读取章节", limit=100)
+        self.assertLess(len(content), 400)
+        self.assertIn("[数据截断]", content)
+
+    def test_write_tool_keeps_summary_only(self):
+        from src.editor.modules.ai_assistant.providers import tool_message_content
+        result = {"success": True, "chapter": "第一章"}
+        self.assertEqual(tool_message_content("update_chapter", result, "✅ 已修改章节"),
+                         "✅ 已修改章节")
+
+    def test_success_flag_not_leaked(self):
+        from src.editor.modules.ai_assistant.providers import tool_message_content
+        content = tool_message_content("get_outline", {"success": True, "entries": []}, "已读取大纲")
+        self.assertNotIn("success", content)
+
+    def test_non_dict_result_is_safe(self):
+        from src.editor.modules.ai_assistant.providers import tool_message_content
+        self.assertEqual(tool_message_content("get_map", None, "已读取地图"), "已读取地图")
 
 
 if __name__ == "__main__":

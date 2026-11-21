@@ -76,7 +76,35 @@ def _summarize_tool_calls(tool_calls: list) -> str:
     return "[工具记录] " + "；".join(parts)
 
 
-_TOOL_CONTINUE_NUDGE = "（上一步的工具已执行，继续完成当前任务。）"
+_TOOL_CONTINUE_NUDGE = ("（上一步的工具已执行，结果见上一条 [工具记录]；"
+                        "不要重复读取同样的信息，直接继续下一步。）")
+
+_READ_PREFIXES = ("get_", "read_", "search_", "list_")
+
+
+def tool_message_content(name: str, result, desc: str, limit: int = 1500) -> str:
+    """生成工具回执内容。
+
+    **读工具必须把真实数据带回去**。以前这里只放一句人话摘要
+    （``get_chapters`` → 「已读取章节列表」），模型拿不到章节名，就只好再读一遍——
+    实测 ``get_chapters`` 一分钟被调了 16 次，表现就是「一直在读章节列表、卡住」。
+
+    所以读类工具在摘要后面附一段紧凑 JSON（超长截断），写类工具只留摘要。
+    """
+    text = desc or ""
+    if not str(name).startswith(_READ_PREFIXES) or not isinstance(result, dict):
+        return text
+    payload = {k: v for k, v in result.items() if k != "success"}
+    if not payload:
+        return text
+    try:
+        data = json.dumps(payload, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return text
+    if len(data) > limit:
+        data = data[:limit] + "[数据截断]"
+    return f"{text}\n{data}"
+
 
 
 def sanitize_messages(messages: list) -> list:
