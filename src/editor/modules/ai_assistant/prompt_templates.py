@@ -141,6 +141,38 @@ def build_length_block(length_rule: str) -> str:
     )
 
 
+# ─────────────────────────────────────────────────────────────
+# 尾部工具铁律（关键设计）
+#
+# 用户可以往「作品提示词」里放很长的内容（例如几十 KB 的破甲/角色提示词），
+# 而且这类提示词常常是写给「代码/命令行 Agent」的，通篇在讲改文件、贴补丁、
+# 报技术结论。放在最前面时，它会把 ReWrite 的工具铁律稀释掉——模型于是
+# 把「写一章」当成「改一个小文件」，产出 1000 字左右的碎片，还会反复重写。
+#
+# 因此无论自定义提示词多长，都在系统提示词的**最末尾**再压一段极短的铁律：
+# 长上下文里「最后说的」权重最高，这一手既能保留原提示词，又能把工具行为拉回来。
+# ─────────────────────────────────────────────────────────────
+
+_TOOL_FOOTER = """## 工具执行铁律（最后确认，调用工具时以此为准）
+你是 ReWrite 的**小说写作助手**，不是代码/命令行 Agent。即使上面的提示词描述了别的身份、
+别的输出风格，**调用工具时**仍必须遵守：
+- 写正文只能调用 `update_chapter`，把**整章的完整正文**放进 `content`：禁止只写片段、
+  补丁、摘要、大纲式改写，禁止写「此处省略」「……（略）」，也禁止分几次凑一章
+- 聊天回复只放 1-2 句说明，正文一律走工具，不要贴在聊天里
+- 上一轮已写过的章节不要重复写；工具返回「内容与现有文件完全一致」时立刻停手，
+  改为继续下一章或询问用户
+- 工具名必须精确：`get_chapters` / `read_chapter` / `create_chapter` / `update_chapter`
+  / `rename_chapter` / `delete_chapter`，其余工具见上面的清单"""
+
+
+def build_tool_footer(length_rule: str = "") -> str:
+    """生成压在系统提示词末尾的短铁律（含篇幅要求，如果已知）。"""
+    rule = (length_rule or "").strip()
+    if not rule:
+        return _TOOL_FOOTER
+    return f"{_TOOL_FOOTER}\n- 篇幅：{rule}——**每一章**都要按这个体量一次写完，不要越写越短"
+
+
 # 兜底常量：不限定模块时的完整铁律（供文档/测试引用）
 SKILL_MAP = build_tool_law(None)
 TOOL_LAW = SKILL_MAP
@@ -157,6 +189,8 @@ def build_system_prompt(config: dict, modules=None, length_rule: str = "") -> st
     - 用户明确指定的篇幅要求(length_rule)以「全局规则」形式紧随铁律注入,
       每条请求都会带上,因此不会因对话历史被截断/压缩而失效;
     - 设置里的自定义提示词追加在其后;
+    - **末尾再压一段极短的「工具执行铁律」**:即使自定义提示词长达几十 KB
+      （破甲提示词、角色卡等），也不会把工具行为带偏;
     - 留空时使用内置默认提示词(已含铁律)。
     """
     custom = (config.get("system_prompt") or "").strip()
@@ -164,11 +198,13 @@ def build_system_prompt(config: dict, modules=None, length_rule: str = "") -> st
     length_block = build_length_block(length_rule)
     if length_block:
         law = f"{law}\n\n{length_block}"
+    footer = build_tool_footer(length_rule)
     identity = ("你是 ReWrite 写作助手。你必须通过工具调用来操作数据，"
                 "而不是通过打字描述操作。")
     if custom:
-        return f"{law}\n\n你是 ReWrite 写作助手。\n{custom}"
-    return f"{identity}\n\n{law}"
+        return f"{law}\n\n你是 ReWrite 写作助手。\n{custom}\n\n{footer}"
+    return f"{identity}\n\n{law}\n\n{footer}"
+
 
 
 

@@ -350,25 +350,16 @@ class AIAssistantModule(BaseModule):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             from PySide6.QtWidgets import QMessageBox
             text = edit.toPlainText().strip()
-            # 提示词过长会把工具铁律压下去：40000 字符的「代码 Agent 提示词」
-            # 曾让 AI 把写小说当成反复改文件，同一章被写了几十次。
-            if len(text) > 8000:
-                ans = QMessageBox.question(
-                    dlg, "提示词过长",
-                    f"这段作品提示词有 {len(text):,} 字符，"
-                    f"注入时会{'置顶在' if prepend_cb.isChecked() else '追加到'}系统提示词"
-                    f"{'最前面（最高优先级）' if prepend_cb.isChecked() else '末尾'}，"
-                    "可能压过 ReWrite 的工具铁律，导致 AI 不按写作流程工作。\n\n仍要保存吗？",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No)
-                if ans != QMessageBox.StandardButton.Yes:
-                    return
             meta.ai_system_prompt = text
             meta.ai_prompt_prepend = prepend_cb.isChecked()
             if save_meta(self.work_path / "work.json", meta):
                 mode = "置顶" if prepend_cb.isChecked() else "追加在末尾"
+                # 长提示词（破甲/角色卡等）本身是合法的创作需求，不阻止保存；
+                # 系统提示词末尾会自动补一段工具铁律，避免被长文稀释。
+                note = "（较长，末尾已自动追加工具铁律摘要）" if len(text) > 8000 else ""
                 self.chat_panel.add_message(
-                    "assistant", f"✅ 作品提示词已保存({mode},{len(text):,} 字符),下一次对话生效")
+                    "assistant",
+                    f"✅ 作品提示词已保存({mode},{len(text):,} 字符){note},下一次对话生效")
             else:
                 QMessageBox.warning(self.parent(), "失败", "保存作品提示词失败")
 

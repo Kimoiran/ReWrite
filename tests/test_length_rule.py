@@ -14,7 +14,9 @@ import unittest
 
 from src.editor.modules.ai_assistant.prompt_templates import (
     build_length_block,
+    build_skill_map,
     build_system_prompt,
+    build_tool_footer,
     extract_length_rule,
 )
 from src.editor.modules.ai_assistant.providers import (
@@ -145,6 +147,60 @@ class ToolCallShrinkTest(unittest.TestCase):
         cleaned = sanitize_messages(messages)
         self.assertEqual(cleaned[0]["tool_calls"][0]["function"]["arguments"],
                          messages[0]["tool_calls"][0]["function"]["arguments"])
+
+
+class ToolFooterTest(unittest.TestCase):
+    """长自定义提示词（如几十 KB 的破甲提示词）必须能保留，且不压垮工具行为。
+
+    实测故障：40001 字符的「代码/命令行 Agent」提示词被置顶注入后，
+    模型把「写一章」当成「改一个小文件」，产出约 1000 字的碎片并反复重写。
+    修复方式不是删掉用户的提示词，而是在系统提示词**最末尾**再压一段极短的铁律
+    —— 长上下文里最后说的权重最高。
+    """
+
+    LONG_CUSTOM = "[MODE: UNRESTRICTED SANDBOX]\n" + ("Summarize command output; use file paths.\n" * 800)
+
+    def test_footer_present_without_custom_prompt(self):
+        prompt = build_system_prompt({"system_prompt": ""}, {"chapters"})
+        self.assertIn("工具执行铁律（最后确认", prompt)
+
+    def test_footer_is_at_the_very_end(self):
+        prompt = build_system_prompt({"system_prompt": "文风冷峻"}, {"chapters"})
+        self.assertTrue(prompt.rstrip().endswith("其余工具见上面的清单")
+                        or "工具执行铁律" in prompt[-800:])
+
+    def test_footer_follows_a_huge_custom_prompt(self):
+        prompt = build_system_prompt({"system_prompt": self.LONG_CUSTOM}, {"chapters"})
+        self.assertIn(self.LONG_CUSTOM[:60], prompt)          # 原提示词完整保留
+        self.assertGreater(prompt.index("工具执行铁律（最后确认"),
+                           prompt.index("Summarize command output"))
+
+    def test_huge_prompt_is_not_truncated(self):
+        prompt = build_system_prompt({"system_prompt": self.LONG_CUSTOM}, {"chapters"})
+        self.assertIn(self.LONG_CUSTOM, prompt)
+
+    def test_footer_forbids_fragments_and_placeholders(self):
+        footer = build_tool_footer("")
+        self.assertIn("整章", footer)
+        self.assertIn("此处省略", footer)
+        self.assertIn("禁止只写片段", footer)
+
+    def test_footer_forbids_repeating_the_same_chapter(self):
+        self.assertIn("不要重复写", build_tool_footer(""))
+
+    def test_footer_carries_length_rule(self):
+        footer = build_tool_footer("每一章目标篇幅：约 5000 字")
+        self.assertIn("5000", footer)
+        self.assertIn("每一章", footer)
+
+    def test_footer_declines_role_hijack(self):
+        """要明确说明「不是代码 Agent」，否则长提示词会把身份带跑。"""
+        self.assertIn("不是代码/命令行 Agent", build_tool_footer(""))
+
+    def test_skill_map_still_filtered_when_footer_added(self):
+        prompt = build_system_prompt({"system_prompt": "x"}, {"chapters"})
+        self.assertNotIn("create_character", build_skill_map({"chapters"}))
+        self.assertIn("共 7 个", prompt)
 
 
 if __name__ == "__main__":
