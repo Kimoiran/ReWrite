@@ -38,6 +38,11 @@ class AIAssistantModule(BaseModule):
             self.agent.enabled_modules = self._work_modules()
         except Exception:
             logger.debug("读取启用模块失败,按全部启用处理", exc_info=True)
+        # 篇幅规则持久化:重启后依然生效(否则用户只说「继续」时目标字数会丢)
+        try:
+            self.agent.length_rule = self._work_length_rule()
+        except Exception:
+            logger.debug("读取篇幅规则失败", exc_info=True)
         self.annotation_mgr = AnnotationManager(work_path)
         self.annotation_mgr.load()
         self._editor = None
@@ -56,6 +61,9 @@ class AIAssistantModule(BaseModule):
         self._undo_mark = 0
         self._auto_confirm = False
         self._task_auto = False  # 任务内自动继续:确认一次后,本任务后续写操作直接执行
+        # 死循环防护:连续「写入同一章但内容没变化」的计数
+        self._unchanged_streak = 0
+        self._loop_guard_tripped = False
 
     # ── 生命周期 ──
 
@@ -340,14 +348,28 @@ class AIAssistantModule(BaseModule):
         btns.rejected.connect(dlg.reject)
         lo.addWidget(btns)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            meta.ai_system_prompt = edit.toPlainText().strip()
+            from PySide6.QtWidgets import QMessageBox
+            text = edit.toPlainText().strip()
+            # 提示词过长会把工具铁律压下去：40000 字符的「代码 Agent 提示词」
+            # 曾让 AI 把写小说当成反复改文件，同一章被写了几十次。
+            if len(text) > 8000:
+                ans = QMessageBox.question(
+                    dlg, "提示词过长",
+                    f"这段作品提示词有 {len(text):,} 字符，"
+                    f"注入时会{'置顶在' if prepend_cb.isChecked() else '追加到'}系统提示词"
+                    f"{'最前面（最高优先级）' if prepend_cb.isChecked() else '末尾'}，"
+                    "可能压过 ReWrite 的工具铁律，导致 AI 不按写作流程工作。\n\n仍要保存吗？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No)
+                if ans != QMessageBox.StandardButton.Yes:
+                    return
+            meta.ai_system_prompt = text
             meta.ai_prompt_prepend = prepend_cb.isChecked()
             if save_meta(self.work_path / "work.json", meta):
                 mode = "置顶" if prepend_cb.isChecked() else "追加在末尾"
                 self.chat_panel.add_message(
-                    "assistant", f"✅ 作品提示词已保存({mode}),下一次对话生效")
+                    "assistant", f"✅ 作品提示词已保存({mode},{len(text):,} 字符),下一次对话生效")
             else:
-                from PySide6.QtWidgets import QMessageBox
                 QMessageBox.warning(self.parent(), "失败", "保存作品提示词失败")
 
     def _work_ai_prompt(self) -> tuple[str, bool]:
@@ -361,6 +383,27 @@ class AIAssistantModule(BaseModule):
         except Exception:
             logger.debug("读取作品级 AI 提示词失败", exc_info=True)
         return "", False
+
+    def _work_length_rule(self) -> str:
+        """读取持久化的篇幅要求（work.json 的 ai_length_rule）。"""
+        from ....storage.meta import load_meta
+        meta = load_meta(self.work_path / "work.json")
+        return (getattr(meta, "ai_length_rule", "") or "").strip() if meta else ""
+
+    def _save_length_rule(self, rule: str):
+        """把篇幅要求写进 work.json，避免重启后「每章 5000 字」丢失。"""
+        from ....storage.meta import load_meta, save_meta
+        path = self.work_path / "work.json"
+        meta = load_meta(path)
+        if meta is None:
+            return
+        if (meta.ai_length_rule or "") == rule:
+            return
+        meta.ai_length_rule = rule
+        if save_meta(path, meta):
+            logger.info("篇幅规则已持久化: %s", rule)
+        else:
+            logger.warning("篇幅规则持久化失败: %s", rule)
 
     def _do_chat(self, message: str, context: str):
         from .worker import StreamingProposalWorker
@@ -386,8 +429,12 @@ class AIAssistantModule(BaseModule):
             if rule:
                 self.agent.length_rule = rule
                 logger.info("篇幅规则更新: %s", rule)
+                self._save_length_rule(rule)
         except Exception:
             logger.debug("解析篇幅要求失败", exc_info=True)
+        # 新任务:复位死循环防护
+        self._unchanged_streak = 0
+        self._loop_guard_tripped = False
         self._streaming_bubble = None
         self._streaming_text = ""
         self._round_reasoning = ""
@@ -527,7 +574,10 @@ class AIAssistantModule(BaseModule):
                 start = getattr(self._loop_worker, "_start_len", 0)
                 tail = msgs[start:] if msgs and 0 <= start < len(msgs) else msgs
                 if tail:
-                    self.agent.history.extend(tail)
+                    # 只记有信息量的部分：工具回执和空壳 assistant 会挤占记忆窗口，
+                    # 让 AI 每轮看到几乎相同的上下文（→ 输出相同 → 死循环）
+                    from .agent import filter_substantive_history
+                    self.agent.history.extend(filter_substantive_history(tail))
                     self._loop_worker.messages = None  # 防陈旧引用被再次记录(重复)
                     recorded = True
             if recorded:
@@ -566,7 +616,6 @@ class AIAssistantModule(BaseModule):
             return  # 停止后忽略延迟到达的提案(可能属于已被停止的任务)
 
         self.chat_panel.hide_loading()
-        _QA.processEvents()
 
         if self._orchestrator is not None:
             msgs = self._orchestrator.prepare_after_messages(tool_calls, after)
@@ -600,7 +649,6 @@ class AIAssistantModule(BaseModule):
                         if self._orchestrator is not None else _describe_tool(name, a, result))
             msgs.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": desc})
             self.chat_panel.add_message("assistant", markdown_to_html(f"📖 {desc}"))
-            _QA.processEvents()
 
         # 2) 写工具:确认(或自动)后执行
         if not writes:
@@ -670,6 +718,15 @@ class AIAssistantModule(BaseModule):
                 elif pushed and isinstance(result, dict):
                     # 关联实际创建/重命名的文件路径,供撤回精确删除(不误伤手动文件)
                     self._undo_stack.attach_result(result)
+
+                # 死循环防护:连续多次「写了但内容没变」→ 立刻收手
+                if isinstance(result, dict) and result.get("unchanged"):
+                    self._unchanged_streak += 1
+                    if self._unchanged_streak >= 2:
+                        self._loop_guard_tripped = True
+                        logger.warning("检测到重复写入同一章且内容无变化,中断本任务")
+                else:
+                    self._unchanged_streak = 0
                 desc = (self._orchestrator._describe_tool(name, a, result)
                         if self._orchestrator is not None else _describe_tool(name, a, result))
             touched.update(self._module_for_tool(name))
@@ -678,15 +735,35 @@ class AIAssistantModule(BaseModule):
             msgs.append({"role": "tool", "tool_call_id": tc.get("id", ""), "content": desc})
             prefix = "⚡" if auto else "✅"
             self.chat_panel.add_message("assistant", markdown_to_html(f"{prefix} {desc}"))
-            _QA.processEvents()
         return msgs
     def _finish_after_writes(self, msgs, system, touched):
-        from PySide6.QtWidgets import QApplication as _QA
         self._refresh_panels(touched)
+        # 死循环防护触发:不再续写,直接收手并告知用户
+        if getattr(self, "_loop_guard_tripped", False):
+            self._loop_guard_tripped = False
+            self._unchanged_streak = 0
+            self._task_auto = False
+            self._auto_confirm = False
+            self.chat_panel.hide_loading()
+            self.chat_panel.set_busy(False)
+            self.chat_panel.add_message("assistant", markdown_to_html(
+                "⏹ **已自动停止**：AI 连续多轮写同一章，但内容和文件里完全一样（死循环）。\n\n"
+                "常见原因：\n"
+                "- 「作品提示词」过大或与写作无关（它会置顶注入，压过工具铁律）\n"
+                "- AI 没拿到目标篇幅/剧情上下文，只能一遍遍产出同样的短文\n\n"
+                "建议到 ✨ 指令 →「设置作品提示词…」检查那段提示词。"))
+            try:
+                from .agent import filter_substantive_history
+                self.agent.history.extend(filter_substantive_history(msgs))
+                self.agent._persist()
+            except Exception:
+                logger.warning("记录中断状态失败", exc_info=True)
+            return
         if getattr(self, "_stopped_flag", False):
             # 停止:已执行的操作记入记忆,不再发起续写
             try:
-                self.agent.history.extend(msgs)
+                from .agent import filter_substantive_history
+                self.agent.history.extend(filter_substantive_history(msgs))
                 self.agent._persist()
             except Exception:
                 logger.exception("停止后记录已执行操作失败")
@@ -699,7 +776,6 @@ class AIAssistantModule(BaseModule):
         # 重置流式状态（tool_loop 会创建新的流式气泡）
         self._streaming_bubble = None
         self._streaming_text = ""
-        _QA.processEvents()
         self._tool_loop(msgs, system)
 
     def _do_chapter_diff(self, args: dict, auto: bool = False) -> dict:
@@ -738,6 +814,15 @@ class AIAssistantModule(BaseModule):
                     "existing_chapters": list_chapter_names(cd)}
         if not new_c:
             return {"success": False, "error": "章节内容为空,请提供 content 参数"}
+        # 死循环防护:内容和磁盘上完全一致 → 不算修改,并让 AI 知道「没变化」。
+        # 之前这种情况会被当成成功写入，AI 看到「✅ 已修改章节」就以为还要继续，
+        # 于是一章被反复写几十次（实测同一章 27 次、其中 9 次逐字节相同）。
+        if new_c.strip() == (old_c or "").strip():
+            logger.info("跳过重复写入(内容无变化): %s", cn)
+            return {"success": False, "unchanged": True,
+                    "error": f"「{chapter}」的内容与现有文件完全一致，未做任何修改。"
+                             f"请不要重复写入同一章——要么继续下一章，要么向用户说明。",
+                    "chapter": chapter}
         if auto or self._show_diff_dialog(old_c, new_c, cn):
             try:
                 tp.write_text(new_c, encoding="utf-8")

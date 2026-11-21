@@ -75,6 +75,7 @@ class WorkMeta:
     work_id: str = ""  # UUID 唯一标识，用于目录命名和去重
     ai_system_prompt: str = ""  # 作品级自定义 AI 系统提示词(追加到默认提示词后,用于风格/尺度定制)
     ai_prompt_prepend: bool = False  # True:作品提示词置顶注入(最高优先级,优先于默认系统提示词)
+    ai_length_rule: str = ""  # 用户明确指定的篇幅要求(如「每章约 5000 字」),作为全局规则持久化
 
     def __post_init__(self):
         if isinstance(self.git, dict):

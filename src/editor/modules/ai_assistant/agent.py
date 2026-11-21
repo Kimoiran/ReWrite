@@ -5,6 +5,31 @@ from .prompt_templates import build_system_prompt
 from src.settings.ai_config import load_chat_history, save_chat_history
 
 
+def filter_substantive_history(messages: list) -> list:
+    """把一轮里的工具执行轨迹过滤成「有信息量」的对话，供持久化记忆。
+
+    为什么需要：工具回执（「✅ 已修改章节」）只有十几个字，却和真正的对话
+    一样占一条消息。写一章往往产生好几条回执，几十轮下来历史里全是回执骨架，
+    剧情、文风、用户要求全被挤出窗口——AI 每轮看到的上下文几乎一样，
+    于是输出也一样，最终表现为**同一章被反复写入的死循环**。
+
+    保留：用户消息、有正文的 assistant 消息。
+    丢弃：tool 回执、只带 tool_calls 而正文为空的 assistant 消息。
+    """
+    kept = []
+    for msg in messages or []:
+        role = msg.get("role")
+        if role == "tool":
+            continue
+        if role == "assistant" and msg.get("tool_calls"):
+            continue                      # 工具调用轨迹，正文为空
+        content = msg.get("content")
+        if role == "assistant" and (not isinstance(content, str) or not content.strip()):
+            continue
+        kept.append(msg)
+    return kept
+
+
 class AIAgent:
     """AI 助手核心逻辑。记忆像聊天一样持久——关了再开还记得。"""
 
@@ -66,6 +91,8 @@ class AIAgent:
 
         summary_parts = []
         for msg in older:
+            if msg.get("role") == "tool":
+                continue                      # 工具回执没有剧情信息，不进摘要
             role = "用户" if msg.get("role") == "user" else "AI"
             c = msg.get("content", "")
             if isinstance(c, list):
