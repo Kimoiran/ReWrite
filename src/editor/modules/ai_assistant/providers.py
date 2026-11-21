@@ -76,85 +76,81 @@ def _summarize_tool_calls(tool_calls: list) -> str:
     return "[工具记录] " + "；".join(parts)
 
 
+_TOOL_CONTINUE_NUDGE = "（上一步的工具已执行，继续完成当前任务。）"
+
+
 def sanitize_messages(messages: list) -> list:
-    """构造 API 请求前清理消息。
+    """构造 API 请求前清理消息：**请求里不出现任何 tool_calls / tool 结构**。
 
-    三件事：
+    为什么整段扁平化：
 
-    1. 剥离思考过程（不占 token、不诱导模型把草稿当事实）；
-    2. **把较早轮次的工具调用折叠成一行日志**，并连同配对的 tool 回执一起
-       从上下文里去掉——这一步既防止上下文被整章正文顶满（顶满后服务端
-       从头裁，最先丢的就是字数要求），也防止模型模仿历史里的占位措辞；
-    3. 最新一轮（最后一条带 ``tool_calls`` 的 assistant）保持原样，
-       否则 assistant/tool 配对会断。
-
-    ⚠️ 思考过程**不能直接丢掉**：DeepSeek 的 thinking 模式要求把
-    ``reasoning_content`` 原样传回，否则续写请求会 400
+    DeepSeek thinking 模式要求把 ``reasoning_content`` 原样传回，否则 400
     （"The reasoning_content in the thinking mode must be passed back to the API"）。
-    所以这里的处理是「**从正文里摘出来，放进独立字段**」：
-    ``content`` 只留正文，``reasoning_content`` 带上推理原文。
+    而这条要求只在请求里出现**带 tool_calls 的 assistant 消息**时才生效。
+    与其把大段推理原文塞回去（费 token、还会诱导模型模仿草稿），
+    不如根本不让请求带上工具调用结构：
+    把 assistant(tool_calls) 与紧随其后的 tool 回执**合并成一行文本日志**，
+    例如 ``[工具记录] update_chapter "第1章 拜师引路" 5123字符：✅ 已修改章节``。
+
+    同时这台机器上的另一组老问题也一并解决：
+
+    - 推理彻底不进上下文（省 token，也不泄漏草稿措辞）；
+    - 旧轮次不再携带整章正文，上下文不会被顶满（顶满后服务端从头裁，
+      最先丢的就是字数要求）；
+    - 不会出现「孤儿 tool 消息」或「未回执的 tool_calls」这类序列 400。
+
+    扁平化后如果最后一条是 assistant（说明刚执行完工具），补一句「继续」，
+    否则模型不知道要接着往下做。
     """
     msgs = list(messages or [])
 
-    # 当前轮 = 最后一条带 tool_calls 的 assistant；它必须原样保留
-    last_tc = -1
-    for i, m in enumerate(msgs):
-        if m.get("role") == "assistant" and m.get("tool_calls"):
-            last_tc = i
+    # tool_call_id → 回执内容：合进日志行，信息不丢
+    results = {}
+    for m in msgs:
+        if m.get("role") == "tool":
+            results[m.get("tool_call_id")] = (m.get("content") or "").strip()
 
-    # 已经拿到回执的 tool_call id。凡是回执缺失（例如写操作被中途跳过、id 为空），
-    # 该组 tool_calls 会让服务端直接 400「消息序列不合法」，因此一律折叠掉。
-    answered = {m.get("tool_call_id") for m in msgs
-                if m.get("role") == "tool" and m.get("tool_call_id")}
-
-    def _complete(msg) -> bool:
-        ids = [(tc or {}).get("id") for tc in (msg.get("tool_calls") or [])]
-        return bool(ids) and all(i and i in answered for i in ids)
-
-    collapsed_ids = set()
+    had_tools = False
     cleaned = []
-    for i, msg in enumerate(msgs):
+    for msg in msgs:
         role = msg.get("role")
 
-        # 历史轮次：assistant(tool_calls) + tool 回执 → 一行日志
-        # 当前轮若回执不全，也折叠（宁可丢这一轮的痕迹，也不要整个请求 400）
-        if role == "assistant" and msg.get("tool_calls") and (
-                i != last_tc or not _complete(msg)):
-            for tc in msg["tool_calls"]:
-                cid = (tc or {}).get("id")
-                if cid:
-                    collapsed_ids.add(cid)
-            text = strip_reasoning(msg.get("content") or "").strip()
-            note = _summarize_tool_calls(msg["tool_calls"])
-            cleaned.append({"role": "assistant",
-                            "content": f"{text}\n\n{note}".strip() if text else note})
-            continue
+        if role == "tool":
+            continue                      # 回执已合并进上面的日志行
 
-        if role == "tool" and msg.get("tool_call_id") in collapsed_ids:
-            continue                     # 配对的回执一并去掉，避免孤儿 tool 消息
+        if role == "assistant" and msg.get("tool_calls"):
+            had_tools = True
+            _, body = _split_reasoning_block(msg.get("content") or "")
+            body = body.strip()
+            line = _summarize_tool_calls(msg["tool_calls"])
+            outs = []
+            for tc in msg["tool_calls"]:
+                out = results.get((tc or {}).get("id"))
+                if out:
+                    outs.append(out)
+            if outs:
+                line += "：" + "；".join(outs)
+            text = f"{body}\n\n{line}".strip() if body else line
+            cleaned.append({"role": "assistant", "content": text})
+            continue
 
         content = msg.get("content")
         if not isinstance(content, str):
-            cleaned.append(msg)          # Claude 的 content blocks 原样保留
+            cleaned.append(msg)           # Claude 的 content blocks 原样保留
             continue
 
-        # 摘出思考过程：正文归 content，推理归 reasoning_content（thinking 模式要求回传）
-        reasoning, body = _split_reasoning_block(content)
-        existing = msg.get("reasoning_content")
-        if not reasoning and isinstance(existing, str) and existing:
-            reasoning = existing
-        if (not body and content.strip() and not msg.get("tool_calls")
-                and role == "assistant"):
-            continue                     # 既没正文也没工具调用：空壳消息，丢掉
+        # 正文里的思考过程标记一律摘掉，且不以色段字段回传
+        _, body = _split_reasoning_block(content)
+        if role == "assistant" and not body.strip() and content.strip():
+            continue                      # 只剩推理的空壳消息
+        fixed = {k: v for k, v in msg.items() if k != "reasoning_content"}
+        fixed["content"] = body
+        cleaned.append(fixed)
 
-        if reasoning == (existing or "") and body == content:
-            cleaned.append(msg)          # 没有任何变化
-        else:
-            fixed = {**msg, "content": body}
-            if reasoning:
-                fixed["reasoning_content"] = reasoning
-            cleaned.append(fixed)
+    if had_tools and cleaned and cleaned[-1].get("role") == "assistant":
+        cleaned.append({"role": "user", "content": _TOOL_CONTINUE_NUDGE})
     return cleaned
+
 
 
 
@@ -465,10 +461,27 @@ def _describe_messages(messages: list) -> str:
             f"未回执调用={sorted(unanswered) or '无'}")
 
 
+def _ensure_reasoning_field(messages: list) -> list:
+    """给**每条** assistant 消息补上 ``reasoning_content``（没有就填空串）。
+
+    DeepSeek thinking 模式会拒绝缺少该字段的请求。我们并非总能拿到当时的推理
+    原文（例如重启后的历史、或模型本轮没输出推理），此时宁可回传空串——
+    服务端要的是「这个字段在」，不是必须长篇大论。
+    """
+    out = []
+    for m in messages or []:
+        if m.get("role") == "assistant" and "reasoning_content" not in m:
+            out.append({**m, "reasoning_content": ""})
+        else:
+            out.append(m)
+    return out
+
+
 def _make_streaming_request(agent, messages: list, system_prompt: str = "",
                              on_reasoning=None, on_content=None, tools: list = None,
                              retries: int = 2, stop_event=None,
-                             max_tokens: int = 32768, _reduced: bool = False):
+                             max_tokens: int = 32768, _reduced: bool = False,
+                             _fill_reasoning: bool = False):
     """流式请求，边接收边回调。返回 (full_text, tool_calls, reasoning)。
 
     - on_reasoning(chunk): 收到推理内容时回调
@@ -487,7 +500,10 @@ def _make_streaming_request(agent, messages: list, system_prompt: str = "",
     full = []
     if system_prompt and system_prompt.strip():
         full.append({"role": "system", "content": system_prompt})
-    full.extend(sanitize_messages(messages))
+    sanitized = sanitize_messages(messages)
+    if _fill_reasoning:
+        sanitized = _ensure_reasoning_field(sanitized)
+    full.extend(sanitized)
 
     payload = {"model": model, "max_tokens": max_tokens, "messages": full, "stream": True}
     if tools:
@@ -605,7 +621,17 @@ def _make_streaming_request(agent, messages: list, system_prompt: str = "",
                 return _make_streaming_request(
                     agent, messages, system_prompt, on_reasoning, on_content,
                     tools, retries=0, stop_event=stop_event,
-                    max_tokens=8192, _reduced=True)
+                    max_tokens=8192, _reduced=True,
+                    _fill_reasoning=_fill_reasoning)
+            # 400 且服务端抱怨 reasoning_content → 给所有 assistant 补上该字段再试一次
+            if (e.code == 400 and not _fill_reasoning
+                    and "reasoning_content" in (body or "")):
+                log.warning("服务端要求 reasoning_content，补齐字段后重试一次")
+                return _make_streaming_request(
+                    agent, messages, system_prompt, on_reasoning, on_content,
+                    tools, retries=0, stop_event=stop_event,
+                    max_tokens=max_tokens, _reduced=_reduced,
+                    _fill_reasoning=True)
             raise ApiStatusError(e.code, body) from e
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             if attempt < retries:

@@ -66,8 +66,12 @@ class StripReasoningTest(unittest.TestCase):
 
 
 class SanitizeMessagesTest(unittest.TestCase):
-    def test_reasoning_moved_out_of_content_into_its_own_field(self):
-        """推理要从正文里摘出来，但**不能丢**——thinking 模式要求回传。"""
+    def test_reasoning_removed_from_content_and_not_sent(self):
+        """推理既不掺进正文，也不作为字段回传——请求里彻底不出现。
+
+        之所以能这样：sanitize 会把工具往返压成纯文本日志，请求里不再有
+        tool_calls 结构，服务端也就不会要求 reasoning_content 回传。
+        """
         msgs = [
             {"role": "user", "content": "写 5000 字"},
             {"role": "assistant", "content": MARKED},
@@ -75,33 +79,36 @@ class SanitizeMessagesTest(unittest.TestCase):
         cleaned = sanitize_messages(msgs)
         self.assertEqual(cleaned[0]["content"], "写 5000 字")
         self.assertEqual(cleaned[1]["content"], "正文第一段")
-        self.assertEqual(cleaned[1]["reasoning_content"], "我先想想怎么开头")
-        self.assertNotIn("REASONING", str(cleaned))     # 标记本身不外泄
+        self.assertNotIn("reasoning_content", cleaned[1])
+        blob = str(cleaned)
+        self.assertNotIn("REASONING", blob)
+        self.assertNotIn("我先想想怎么开头", blob)
 
     def test_display_marker_never_reaches_api(self):
         cleaned = sanitize_messages([{"role": "assistant", "content": MARKED}])
         self.assertNotIn("<!--", cleaned[0]["content"])
 
     def test_assistant_message_with_only_reasoning_is_dropped(self):
-        """没有正文也没有工具调用 → 空壳，丢掉（也不会引发 reasoning 回传要求）。"""
+        """没有正文也没有工具调用 → 空壳，丢掉。"""
         msgs = [
             {"role": "user", "content": "你好"},
             {"role": "assistant", "content": "<!--REASONING-->\n纯推理\n<!--/REASONING-->"},
         ]
         self.assertEqual(len(sanitize_messages(msgs)), 1)
 
-    def test_tool_call_message_keeps_reasoning(self):
-        """带 tool_calls 的 assistant 必须把 reasoning_content 一并回传，否则 400。"""
+    def test_tool_call_becomes_plain_log_line(self):
+        """带 tool_calls 的消息被扁平化成日志行：请求里不再有工具结构。"""
         msgs = [
             {"role": "assistant", "content": "<!--REASONING-->\n我先看看章节\n<!--/REASONING-->",
              "tool_calls": [{"id": "1", "type": "function",
                              "function": {"name": "get_chapters", "arguments": "{}"}}]},
-            {"role": "tool", "tool_call_id": "1", "content": "ok"},
+            {"role": "tool", "tool_call_id": "1", "content": "共 3 章"},
         ]
         cleaned = sanitize_messages(msgs)
-        self.assertEqual(cleaned[0]["content"], "")
-        self.assertIn("tool_calls", cleaned[0])
-        self.assertEqual(cleaned[0]["reasoning_content"], "我先看看章节")
+        self.assertEqual(cleaned[0]["content"], "[工具记录] get_chapters：共 3 章")
+        self.assertNotIn("tool_calls", cleaned[0])
+        self.assertNotIn("reasoning_content", cleaned[0])
+        self.assertNotIn("我先看看章节", str(cleaned))
 
     def test_system_message_preserved(self):
         msgs = [{"role": "system", "content": "你是助手"}]
@@ -165,23 +172,19 @@ class CompressMemoryTest(unittest.TestCase):
             agent.history.append({"role": "user", "content": f"继续写第 {i} 章"})
         return agent
 
-    def test_reasoning_kept_out_of_content_but_returned_as_field(self):
-        """不变量：正文里不能掺思考过程；但推理要以 reasoning_content 回传。
+    def test_reasoning_never_reaches_the_request(self):
+        """不变量：请求里既没有推理文本，也没有 tool_calls / reasoning_content 字段。
 
-        DeepSeek thinking 模式要求把 reasoning_content 原样传回，
-        否则续写请求直接 400（"must be passed back to the API"）。
-        所以「不发回」这个旧说法要修正为「不掺进正文，但作为独立字段回传」。
+        这样服务端的「thinking 模式必须回传 reasoning_content」就无从触发。
         """
         agent = self._agent_with_history()
         agent._compress()
         sent = sanitize_messages(agent.history)
-        contents = "\n".join(str(m.get("content", "")) for m in sent)
-        self.assertNotIn("REASONING", contents)
-        self.assertNotIn("我先想想怎么开头", contents)
-        # 推理没有丢：在独立字段里
-        reasonings = [m.get("reasoning_content") for m in sent if m.get("reasoning_content")]
-        self.assertTrue(reasonings)
-        self.assertIn("我先想想怎么开头", "\n".join(reasonings))
+        blob = str(sent)
+        self.assertNotIn("REASONING", blob)
+        self.assertNotIn("我先想想怎么开头", blob)
+        self.assertNotIn("reasoning_content", blob)
+        self.assertNotIn("tool_calls", blob)
 
     def test_reasoning_not_in_summary(self):
         """摘要块里不能混入思考过程（否则记忆会被推理噪声挤占）。"""

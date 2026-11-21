@@ -81,7 +81,8 @@ class MessageShapeLogTest(unittest.TestCase):
 
 
 class MessageSequenceTest(unittest.TestCase):
-    """服务端会拒绝「tool_calls 没有对应回执」的请求，这里必须提前兜住。"""
+    """请求里**不出现任何工具调用结构**——这是绕开 thinking 模式
+    「必须回传 reasoning_content」要求的关键。"""
 
     def _assistant(self, call_id, content=""):
         return {"role": "assistant", "content": content,
@@ -89,41 +90,49 @@ class MessageSequenceTest(unittest.TestCase):
                                 "function": {"name": "update_chapter",
                                              "arguments": "{}"}}]}
 
-    def test_complete_last_group_is_preserved(self):
+    def test_tool_structure_never_survives(self):
         msgs = [{"role": "user", "content": "写"},
                 self._assistant("c1"),
                 {"role": "tool", "tool_call_id": "c1", "content": "ok"}]
         cleaned = sanitize_messages(msgs)
-        self.assertIn("tool_calls", cleaned[1])
+        blob = json.dumps(cleaned, ensure_ascii=False)
+        self.assertNotIn("tool_calls", blob)
+        self.assertNotIn('"role": "tool"', blob)
+        self.assertNotIn("reasoning_content", blob)
+        self.assertIn("[工具记录]", blob)
 
-    def test_unanswered_last_group_is_collapsed(self):
-        """当前轮回执缺失（写操作被跳过等）→ 折叠，避免整个请求 400。"""
+    def test_tool_result_merged_into_log(self):
+        msgs = [{"role": "user", "content": "写"},
+                self._assistant("c1"),
+                {"role": "tool", "tool_call_id": "c1", "content": "✅ 已修改章节"}]
+        cleaned = sanitize_messages(msgs)
+        self.assertIn("✅ 已修改章节", cleaned[1]["content"])
+
+    def test_unanswered_group_still_flattened(self):
         msgs = [{"role": "user", "content": "写"}, self._assistant("c1")]
         cleaned = sanitize_messages(msgs)
-        self.assertNotIn("tool_calls", cleaned[1])
         self.assertIn("[工具记录]", cleaned[1]["content"])
-
-    def test_empty_call_id_is_collapsed(self):
-        """id 为空串的 tool_call 同样会让服务端报序列不合法。"""
-        msgs = [{"role": "user", "content": "写"},
-                self._assistant(""),
-                {"role": "tool", "tool_call_id": "", "content": "ok"}]
-        cleaned = sanitize_messages(msgs)
         self.assertNotIn("tool_calls", cleaned[1])
 
-    def test_partially_answered_group_is_collapsed(self):
-        assistant = {"role": "assistant", "content": "", "tool_calls": [
-            {"id": "c1", "type": "function", "function": {"name": "read_chapter", "arguments": "{}"}},
-            {"id": "c2", "type": "function", "function": {"name": "get_outline", "arguments": "{}"}},
-        ]}
-        msgs = [{"role": "user", "content": "写"}, assistant,
+    def test_continuation_nudge_appended(self):
+        """扁平化后若以 assistant 结尾，要补一句「继续」。"""
+        msgs = [{"role": "user", "content": "写"},
+                self._assistant("c1"),
                 {"role": "tool", "tool_call_id": "c1", "content": "ok"}]
         cleaned = sanitize_messages(msgs)
-        self.assertNotIn("tool_calls", cleaned[1])
-        # 孤立回执也要一起去掉
-        self.assertNotIn("tool", [m["role"] for m in cleaned])
+        self.assertEqual(cleaned[-1]["role"], "user")
+        self.assertIn("继续", cleaned[-1]["content"])
 
-    def test_no_orphan_tool_messages_after_collapse(self):
+    def test_no_nudge_without_tools(self):
+        cleaned = sanitize_messages([{"role": "user", "content": "写"},
+                                     {"role": "assistant", "content": "好的"}])
+        self.assertEqual(cleaned[-1]["role"], "assistant")
+
+    def test_user_message_untouched(self):
+        msgs = [{"role": "user", "content": "每章 5000 字"}, self._assistant("c1")]
+        self.assertEqual(sanitize_messages(msgs)[0]["content"], "每章 5000 字")
+
+    def test_multiple_rounds_become_log_lines(self):
         msgs = [
             {"role": "user", "content": "写"},
             self._assistant("c1"),
@@ -132,9 +141,10 @@ class MessageSequenceTest(unittest.TestCase):
             {"role": "tool", "tool_call_id": "c2", "content": "新回执"},
         ]
         cleaned = sanitize_messages(msgs)
-        tool_ids = {m.get("tool_call_id") for m in cleaned if m["role"] == "tool"}
-        call_ids = {tc["id"] for m in cleaned if m.get("tool_calls") for tc in m["tool_calls"]}
-        self.assertEqual(tool_ids, call_ids)   # 严格配对，没有孤儿
+        logs = [m for m in cleaned if "[工具记录]" in (m.get("content") or "")]
+        self.assertEqual(len(logs), 2)
+        self.assertIn("旧回执", logs[0]["content"])
+        self.assertIn("新回执", logs[1]["content"])
 
     def test_serializable(self):
         msgs = [{"role": "user", "content": "写"}, self._assistant("c1")]

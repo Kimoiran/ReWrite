@@ -134,22 +134,20 @@ class ToolCallCollapseTest(unittest.TestCase):
         self.assertNotIn("完整内容已写入文件", blob)
 
     def test_paired_tool_message_removed(self):
-        """旧轮次的 tool 回执一并去掉；当前轮（最后一条）仍保留配对。"""
+        """所有 tool 回执都被合并进日志行，请求里不再有 tool 角色。"""
         cleaned = sanitize_messages(self._messages(6000))
         self.assertEqual([m["role"] for m in cleaned],
-                         ["user", "assistant", "assistant", "tool"])
-        self.assertNotIn("tool_calls", cleaned[1])       # 旧轮次已折叠
-        self.assertIn("tool_calls", cleaned[2])          # 当前轮保留
+                         ["user", "assistant", "assistant", "user"])
+        for m in cleaned:
+            self.assertNotIn("tool_calls", m)
 
-    def test_latest_tool_call_kept_intact(self):
-        """当前轮必须原样保留，否则 assistant/tool 配对会断。"""
-        messages = self._messages(6000)
-        cleaned = sanitize_messages(messages)
-        current = [m for m in cleaned if m.get("tool_calls")]
-        self.assertEqual(len(current), 1)
-        self.assertEqual(current[0]["tool_calls"][0]["id"], "c2")
-        self.assertEqual(current[0]["tool_calls"][0]["function"]["arguments"],
-                         messages[-2]["tool_calls"][0]["function"]["arguments"])
+    def test_current_round_also_flattened(self):
+        """连当前轮也不保留 tool_calls —— 这是绕开 reasoning_content 要求的关键。"""
+        cleaned = sanitize_messages(self._messages(6000))
+        self.assertEqual([m for m in cleaned if m.get("tool_calls")], [])
+        blob = json.dumps(cleaned, ensure_ascii=False)
+        self.assertNotIn('"role": "tool"', blob)
+        self.assertNotIn("reasoning_content", blob)
 
     def test_user_request_never_touched(self):
         self.assertEqual(sanitize_messages(self._messages(6000))[0]["content"],
