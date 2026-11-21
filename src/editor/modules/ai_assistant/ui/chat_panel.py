@@ -30,7 +30,7 @@ def merge_reasoning_text(current: str, chunk: str,
         return current or ""
     merged = f"{current or ''}{chunk}"
     if len(merged) > limit:
-        merged = "…（前段略）\n" + merged[-limit:]
+        merged = "[推理过长，仅显示后段]\n" + merged[-limit:]
     return merged
 
 

@@ -19,10 +19,7 @@ from src.editor.modules.ai_assistant.prompt_templates import (
     build_tool_footer,
     extract_length_rule,
 )
-from src.editor.modules.ai_assistant.providers import (
-    _MAX_ARG_CONTENT,
-    sanitize_messages,
-)
+from src.editor.modules.ai_assistant.providers import sanitize_messages
 
 CHAPTERS_ONLY = {"chapters"}
 
@@ -96,8 +93,15 @@ class SystemPromptInjectionTest(unittest.TestCase):
         self.assertIn("简短", build_length_block("目标篇幅：约 5000 字"))
 
 
-class ToolCallShrinkTest(unittest.TestCase):
-    """历史里超长的工具调用正文要被压缩，否则上下文会把字数要求挤掉。"""
+class ToolCallCollapseTest(unittest.TestCase):
+    """历史里的工具调用要折叠成一行日志，而不是截断后拼一句「散文式占位」。
+
+    真实故障：早先的做法是把旧 content 截到 1200 字，后面拼
+    「…（此处省略 N 字，完整内容已写入文件）」。模型在自己上一轮的工具调用里
+    看到这句话，就照着它给正文收尾——实测 19 次写入都带这句，正文被污染。
+    现在改为折叠成 ``[工具记录] update_chapter "第1章 窗台" 5123字符``，
+    并且**连同配对的 tool 回执一起去掉**。
+    """
 
     def _messages(self, content_len: int):
         args = {"chapter": "第1章 窗台", "content": "字" * content_len}
@@ -108,45 +112,73 @@ class ToolCallShrinkTest(unittest.TestCase):
                              "function": {"name": "update_chapter",
                                           "arguments": json.dumps(args, ensure_ascii=False)}}]},
             {"role": "tool", "tool_call_id": "c1", "content": "✅ 已修改章节"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c2", "type": "function",
+                 "function": {"name": "update_chapter",
+                              "arguments": json.dumps(args, ensure_ascii=False)}}]},
+            {"role": "tool", "tool_call_id": "c2", "content": "✅ 已修改章节"},
         ]
 
-    def test_long_content_is_shrunk(self):
+    def test_old_tool_call_becomes_log_line(self):
         cleaned = sanitize_messages(self._messages(6000))
-        raw = cleaned[1]["tool_calls"][0]["function"]["arguments"]
-        args = json.loads(raw)
-        self.assertLessEqual(len(args["content"]), _MAX_ARG_CONTENT + 60)
-        self.assertIn("省略", args["content"])
+        self.assertIn("[工具记录]", cleaned[1]["content"])
+        self.assertIn("update_chapter", cleaned[1]["content"])
+        self.assertIn("第1章 窗台", cleaned[1]["content"])
+        self.assertNotIn("tool_calls", cleaned[1])
 
-    def test_other_arguments_survive(self):
+    def test_no_prose_placeholder_in_context(self):
+        """核心回归：上下文里不能再出现任何「省略…已写入文件」这类散文占位。"""
         cleaned = sanitize_messages(self._messages(6000))
-        args = json.loads(cleaned[1]["tool_calls"][0]["function"]["arguments"])
-        self.assertEqual(args["chapter"], "第1章 窗台")
+        blob = json.dumps(cleaned, ensure_ascii=False)
+        self.assertNotIn("此处省略", blob)
+        self.assertNotIn("完整内容已写入文件", blob)
 
-    def test_user_request_is_never_touched(self):
+    def test_paired_tool_message_removed(self):
+        """旧轮次的 tool 回执一并去掉；当前轮（最后一条）仍保留配对。"""
         cleaned = sanitize_messages(self._messages(6000))
-        self.assertEqual(cleaned[0]["content"], "每章 5000 字")
+        self.assertEqual([m["role"] for m in cleaned],
+                         ["user", "assistant", "assistant", "tool"])
+        self.assertNotIn("tool_calls", cleaned[1])       # 旧轮次已折叠
+        self.assertIn("tool_calls", cleaned[2])          # 当前轮保留
 
-    def test_short_content_is_untouched(self):
-        messages = self._messages(50)
+    def test_latest_tool_call_kept_intact(self):
+        """当前轮必须原样保留，否则 assistant/tool 配对会断。"""
+        messages = self._messages(6000)
         cleaned = sanitize_messages(messages)
-        self.assertEqual(cleaned[1]["tool_calls"][0]["function"]["arguments"],
-                         messages[1]["tool_calls"][0]["function"]["arguments"])
+        current = [m for m in cleaned if m.get("tool_calls")]
+        self.assertEqual(len(current), 1)
+        self.assertEqual(current[0]["tool_calls"][0]["id"], "c2")
+        self.assertEqual(current[0]["tool_calls"][0]["function"]["arguments"],
+                         messages[-2]["tool_calls"][0]["function"]["arguments"])
 
-    def test_tool_pairing_is_preserved(self):
-        cleaned = sanitize_messages(self._messages(6000))
-        self.assertEqual(len(cleaned), 3)
-        self.assertEqual(cleaned[2]["tool_call_id"], "c1")
+    def test_user_request_never_touched(self):
+        self.assertEqual(sanitize_messages(self._messages(6000))[0]["content"],
+                         "每章 5000 字")
 
-    def test_broken_json_is_left_alone(self):
-        messages = [{
-            "role": "assistant", "content": "",
-            "tool_calls": [{"id": "c1", "type": "function",
-                            "function": {"name": "update_chapter",
-                                         "arguments": "{" + "x" * 5000}}],
-        }]
+    def test_old_chapter_text_not_in_context(self):
+        """旧轮次的整章正文不再出现在上下文里（只留当前轮那一份）。"""
+        messages = self._messages(6000)
+        messages[1]["tool_calls"][0]["function"]["arguments"] = json.dumps(
+            {"chapter": "第1章 窗台", "content": "旧内容" * 3000}, ensure_ascii=False)
         cleaned = sanitize_messages(messages)
-        self.assertEqual(cleaned[0]["tool_calls"][0]["function"]["arguments"],
-                         messages[0]["tool_calls"][0]["function"]["arguments"])
+        blob = json.dumps(cleaned, ensure_ascii=False)
+        self.assertNotIn("旧内容", blob)
+        self.assertIn("[工具记录]", blob)
+
+    def test_broken_json_does_not_crash(self):
+        messages = [
+            {"role": "user", "content": "写"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "update_chapter",
+                              "arguments": "{" + "x" * 5000}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "err"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c2", "type": "function",
+                 "function": {"name": "get_chapters", "arguments": "{}"}}]},
+        ]
+        cleaned = sanitize_messages(messages)
+        self.assertTrue(any("[工具记录]" in (m.get("content") or "") for m in cleaned))
 
 
 class PromptOverrideTest(unittest.TestCase):
@@ -233,8 +265,10 @@ class ToolFooterTest(unittest.TestCase):
     def test_footer_forbids_fragments_and_placeholders(self):
         footer = build_tool_footer("")
         self.assertIn("整章", footer)
-        self.assertIn("此处省略", footer)
-        self.assertIn("禁止只写片段", footer)
+        self.assertIn("占位", footer)
+        # 不要把具体占位措辞原样列进提示词——提一次等于给模型种一次范例
+        self.assertNotIn("此处省略", footer)
+        self.assertIn("不要只交片段", footer)
 
     def test_footer_forbids_repeating_the_same_chapter(self):
         self.assertIn("不要重复写", build_tool_footer(""))

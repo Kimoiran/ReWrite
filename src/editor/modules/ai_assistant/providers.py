@@ -27,79 +27,88 @@ def strip_reasoning(text: str) -> str:
     return _REASONING_BLOCK_RE.sub("", text).strip()
 
 
-_MAX_ARG_CONTENT = 1200   # 历史里单次工具调用携带的正文，最多保留这么多字符
+def _summarize_tool_calls(tool_calls: list) -> str:
+    """把一组历史工具调用压成一行「日志」，不含任何正文措辞。
 
-
-def _shrink_tool_calls(msg: dict) -> dict:
-    """压缩历史消息里工具调用携带的大段正文。
-
-    一次 ``update_chapter`` 的 arguments 里装着整章（几千字），而这些消息会
-    在整个任务期间留在上下文中。写过三四章之后上下文就被顶满——一旦超限，
-    服务端通常**从头裁**，最先丢掉的恰恰是用户那句「每章 5000 字」，
-    于是后面每一章都越写越短。
-
-    这里把旧调用里的正文截断成摘要（保留前后文与 assistant/tool 配对），
-    真正写入文件的完整内容不受影响。
+    **为什么不用占位符截断**：早先的做法是把旧 content 截到 1200 字后拼一句
+    「…（此处省略 N 字，完整内容已写入文件）」。结果模型在自己上一轮的
+    tool_call 里看到这句话，就把它当成了「正文可以这样收尾」的范例，
+    直接把它写进了章节正文（实测 19 次写入都带这句，用户正文被污染）。
+    凡是「像散文」的标记都会被模仿，所以这里只输出结构化日志：
+    ``[工具记录] update_chapter "第1章" 5123字符``。
     """
-    tool_calls = msg.get("tool_calls")
-    if not isinstance(tool_calls, list) or not tool_calls:
-        return msg
-
-    changed = False
-    new_calls = []
-    for tc in tool_calls:
+    parts = []
+    for tc in tool_calls or []:
         fn = (tc or {}).get("function") or {}
+        name = fn.get("name") or "?"
+        detail = ""
         raw = fn.get("arguments")
-        if not isinstance(raw, str) or len(raw) <= _MAX_ARG_CONTENT:
-            new_calls.append(tc)
-            continue
         try:
-            args = json.loads(raw)
+            args = json.loads(raw) if isinstance(raw, str) else {}
         except Exception:
-            new_calls.append(tc)
-            continue
-        if not isinstance(args, dict):
-            new_calls.append(tc)
-            continue
-
-        shrunk = dict(args)
-        local_changed = False
-        for key in ("content", "text", "body"):
-            value = shrunk.get(key)
-            if isinstance(value, str) and len(value) > _MAX_ARG_CONTENT:
-                shrunk[key] = (
-                    value[:_MAX_ARG_CONTENT]
-                    + f"\n…（此处省略 {len(value) - _MAX_ARG_CONTENT} 字，"
-                      f"完整内容已写入文件）")
-                local_changed = True
-        if local_changed:
-            changed = True
-            new_calls.append({**tc, "function": {
-                **fn, "arguments": json.dumps(shrunk, ensure_ascii=False)}})
-        else:
-            new_calls.append(tc)
-
-    return {**msg, "tool_calls": new_calls} if changed else msg
+            args = {}
+        if isinstance(args, dict):
+            key = args.get("chapter") or args.get("title") or args.get("name") or ""
+            if key:
+                detail += f' "{key}"'
+            body = args.get("content") or args.get("text") or ""
+            if isinstance(body, str) and body:
+                detail += f" {len(body)}字符"
+        parts.append(f"{name}{detail}")
+    return "[工具记录] " + "；".join(parts)
 
 
 def sanitize_messages(messages: list) -> list:
-    """构造 API 请求前清理消息：剥离思考过程、压缩超长的工具调用正文。
+    """构造 API 请求前清理消息。
 
-    保留带 ``tool_calls`` 的消息（否则 assistant/tool 配对会被破坏）。
+    三件事：
+
+    1. 剥离思考过程（不占 token、不诱导模型把草稿当事实）；
+    2. **把较早轮次的工具调用折叠成一行日志**，并连同配对的 tool 回执一起
+       从上下文里去掉——这一步既防止上下文被整章正文顶满（顶满后服务端
+       从头裁，最先丢的就是字数要求），也防止模型模仿历史里的占位措辞；
+    3. 最新一轮（最后一条带 ``tool_calls`` 的 assistant）保持原样，
+       否则 assistant/tool 配对会断。
     """
+    msgs = list(messages or [])
+
+    # 当前轮 = 最后一条带 tool_calls 的 assistant；它必须原样保留
+    last_tc = -1
+    for i, m in enumerate(msgs):
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            last_tc = i
+
+    collapsed_ids = set()
     cleaned = []
-    for msg in messages or []:
+    for i, msg in enumerate(msgs):
+        role = msg.get("role")
+
+        # 历史轮次：assistant(tool_calls) + tool 回执 → 一行日志
+        if role == "assistant" and msg.get("tool_calls") and i != last_tc:
+            for tc in msg["tool_calls"]:
+                cid = (tc or {}).get("id")
+                if cid:
+                    collapsed_ids.add(cid)
+            text = strip_reasoning(msg.get("content") or "").strip()
+            note = _summarize_tool_calls(msg["tool_calls"])
+            cleaned.append({"role": "assistant",
+                            "content": f"{text}\n\n{note}".strip() if text else note})
+            continue
+
+        if role == "tool" and msg.get("tool_call_id") in collapsed_ids:
+            continue                     # 配对的回执一并去掉，避免孤儿 tool 消息
+
         content = msg.get("content")
         if not isinstance(content, str):
             cleaned.append(msg)          # Claude 的 content blocks 原样保留
             continue
         stripped = strip_reasoning(content)
         if (not stripped and content.strip() and not msg.get("tool_calls")
-                and msg.get("role") == "assistant"):
+                and role == "assistant"):
             continue                     # 这条消息除了思考过程什么都没有
-        fixed = msg if stripped is content else {**msg, "content": stripped}
-        cleaned.append(_shrink_tool_calls(fixed))
+        cleaned.append(msg if stripped is content else {**msg, "content": stripped})
     return cleaned
+
 
 SKILLS = get_all_skills()
 TOOL_NAMES = {s.name for s in SKILLS}

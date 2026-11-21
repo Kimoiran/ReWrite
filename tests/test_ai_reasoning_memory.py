@@ -40,10 +40,13 @@ class MergeReasoningTest(unittest.TestCase):
         self.assertEqual(merge_reasoning_text(None, "新"), "新")
 
     def test_limit_keeps_tail_with_marker(self):
+        marker = "[推理过长，仅显示后段]\n"
         out = merge_reasoning_text("啊" * 50, "尾", limit=10)
-        self.assertTrue(out.startswith("…（前段略）\n"))
+        self.assertTrue(out.startswith(marker))
         self.assertTrue(out.endswith("尾"))
-        self.assertLessEqual(len(out), 10 + len("…（前段略）\n"))
+        self.assertLessEqual(len(out), 10 + len(marker))
+        # 不要用「……」这类散文式省略号：模型会把这类措辞当范例照抄
+        self.assertNotIn("……", out)
 
 
 class StripReasoningTest(unittest.TestCase):
