@@ -43,6 +43,11 @@ class AIAssistantModule(BaseModule):
             self.agent.length_rule = self._work_length_rule()
         except Exception:
             logger.debug("读取篇幅规则失败", exc_info=True)
+        # 作品提示词：非空则覆盖全局提示词（不只是叠加）
+        try:
+            self.agent.custom_prompt, self.agent.prepend_custom = self._work_ai_prompt()
+        except Exception:
+            logger.debug("读取作品提示词失败", exc_info=True)
         self.annotation_mgr = AnnotationManager(work_path)
         self.annotation_mgr.load()
         self._editor = None
@@ -353,13 +358,17 @@ class AIAssistantModule(BaseModule):
             meta.ai_system_prompt = text
             meta.ai_prompt_prepend = prepend_cb.isChecked()
             if save_meta(self.work_path / "work.json", meta):
-                mode = "置顶" if prepend_cb.isChecked() else "追加在末尾"
+                # 立即生效：作品提示词非空时会覆盖全局设置里那段
+                self.agent.custom_prompt = text
+                self.agent.prepend_custom = prepend_cb.isChecked()
+                mode = "置顶" if prepend_cb.isChecked() else "追加在铁律之后"
                 # 长提示词（破甲/角色卡等）本身是合法的创作需求，不阻止保存；
                 # 系统提示词末尾会自动补一段工具铁律，避免被长文稀释。
                 note = "（较长，末尾已自动追加工具铁律摘要）" if len(text) > 8000 else ""
+                override = "，已覆盖全局提示词" if text else "，改用全局提示词"
                 self.chat_panel.add_message(
                     "assistant",
-                    f"✅ 作品提示词已保存({mode},{len(text):,} 字符){note},下一次对话生效")
+                    f"✅ 作品提示词已保存({mode},{len(text):,} 字符){note}{override},下一次对话生效")
             else:
                 QMessageBox.warning(self.parent(), "失败", "保存作品提示词失败")
 
@@ -411,6 +420,12 @@ class AIAssistantModule(BaseModule):
             self.agent.enabled_modules = self._work_modules()
         except Exception:
             logger.debug("刷新启用模块失败", exc_info=True)
+        # 作品级提示词（破甲/角色卡）：每次任务重新读，改了立即生效。
+        # 非空时会覆盖全局设置里那段，不再叠加。
+        try:
+            self.agent.custom_prompt, self.agent.prepend_custom = self._work_ai_prompt()
+        except Exception:
+            logger.debug("刷新作品提示词失败", exc_info=True)
         # 篇幅要求 → 全局规则：用户这次明确说了字数就更新并常驻系统提示词；
         # 没说则沿用上一次（写连续章节时不必每章重述）。这样即使对话历史被
         # 截断/压缩/服务端裁剪，AI 仍然知道该写多长。
@@ -430,10 +445,8 @@ class AIAssistantModule(BaseModule):
         self._streaming_text = ""
         self._round_reasoning = ""
 
-        work_prompt, work_prepend = self._work_ai_prompt()
-        w = StreamingProposalWorker(
-            self.agent, message, context,
-            extra_system=work_prompt, prepend_extra_system=work_prepend)
+        # 作品提示词已在上面写入 agent.custom_prompt（覆盖全局），这里不再重复传
+        w = StreamingProposalWorker(self.agent, message, context)
         # 信号闭包携带 worker 身份:旧任务延迟到达的信号按代际忽略
         w.text_chunk.connect(lambda t, w=w: self._on_stream_chunk(w, t))
         w.reasoning_chunk.connect(lambda t, w=w: self._set_loading_reasoning(w, t))

@@ -149,6 +149,57 @@ class ToolCallShrinkTest(unittest.TestCase):
                          messages[0]["tool_calls"][0]["function"]["arguments"])
 
 
+class PromptOverrideTest(unittest.TestCase):
+    """自定义提示词分两级：作品级覆盖全局级（而不是两段都塞进去）。
+
+    实测问题：同一段 40,001 字符的破甲提示词同时存在「全局 AI 设置」和
+    「作品提示词」里，最终系统提示词 82,104 字符——同一段喂了两遍，
+    白烧一倍 token，还互相稀释。
+    """
+
+    GLOBAL = "【全局】所有作品通用的风格要求"
+    WORK = "【作品】这一部专用的破甲提示词"
+
+    def test_work_prompt_replaces_global(self):
+        prompt = build_system_prompt({"system_prompt": self.GLOBAL}, {"chapters"},
+                                     "", self.WORK, True)
+        self.assertIn(self.WORK, prompt)
+        self.assertNotIn(self.GLOBAL, prompt)
+
+    def test_global_used_when_no_work_prompt(self):
+        prompt = build_system_prompt({"system_prompt": self.GLOBAL}, {"chapters"},
+                                     "", "", True)
+        self.assertIn(self.GLOBAL, prompt)
+
+    def test_work_prompt_appears_only_once(self):
+        prompt = build_system_prompt({"system_prompt": self.GLOBAL}, {"chapters"},
+                                     "", self.WORK, True)
+        self.assertEqual(prompt.count(self.WORK), 1)
+
+    def test_prepend_puts_work_prompt_first(self):
+        prompt = build_system_prompt({"system_prompt": ""}, {"chapters"},
+                                     "", self.WORK, True)
+        self.assertTrue(prompt.startswith(self.WORK))
+
+    def test_append_puts_work_prompt_after_tool_law(self):
+        prompt = build_system_prompt({"system_prompt": ""}, {"chapters"},
+                                     "", self.WORK, False)
+        self.assertGreater(prompt.index(self.WORK), prompt.index("工具列表"))
+
+    def test_footer_is_last_in_every_mode(self):
+        for prepend in (True, False):
+            prompt = build_system_prompt({"system_prompt": self.GLOBAL}, {"chapters"},
+                                         "", self.WORK, prepend)
+            self.assertIn("工具执行铁律（最后确认", prompt[-1200:])
+
+    def test_global_prompt_not_duplicated_with_length_rule(self):
+        prompt = build_system_prompt({"system_prompt": self.GLOBAL}, {"chapters"},
+                                     "目标篇幅：约 5000 字", self.WORK, True)
+        self.assertEqual(prompt.count(self.WORK), 1)
+        self.assertNotIn(self.GLOBAL, prompt)
+        self.assertIn("5000", prompt)
+
+
 class ToolFooterTest(unittest.TestCase):
     """长自定义提示词（如几十 KB 的破甲提示词）必须能保留，且不压垮工具行为。
 

@@ -181,19 +181,22 @@ DEFAULT_SYSTEM_PROMPT = ("你是 ReWrite 写作助手。你必须通过工具调
                          "而不是通过打字描述操作。\n\n" + SKILL_MAP)
 
 
-def build_system_prompt(config: dict, modules=None, length_rule: str = "") -> str:
+def build_system_prompt(config: dict, modules=None, length_rule: str = "",
+                        custom_prompt: str = "", prepend_custom: bool = False) -> str:
     """统一的系统提示词构建(唯一入口):
 
     - 工具铁律为硬编码,始终置于最前,不可被任何自定义覆盖;
     - 工具清单按作品启用的模块收窄(modules),关掉的模块不会出现在清单里;
     - 用户明确指定的篇幅要求(length_rule)以「全局规则」形式紧随铁律注入,
       每条请求都会带上,因此不会因对话历史被截断/压缩而失效;
-    - 设置里的自定义提示词追加在其后;
-    - **末尾再压一段极短的「工具执行铁律」**:即使自定义提示词长达几十 KB
-      （破甲提示词、角色卡等），也不会把工具行为带偏;
+    - **自定义提示词分两级：作品级覆盖全局级**。作品有独立提示词时只用它，
+      不再叠加全局设置里那段（否则两段会同时注入、白烧一倍 token 且互相稀释）；
+    - prepend_custom=True 时把作品提示词置于最前(最高优先级，适合破甲/角色卡)，
+      否则追加在铁律之后；
+    - **末尾再压一段极短的「工具执行铁律」**:即使自定义提示词长达几十 KB,
+      也不会把工具行为带偏;
     - 留空时使用内置默认提示词(已含铁律)。
     """
-    custom = (config.get("system_prompt") or "").strip()
     law = build_tool_law(modules)
     length_block = build_length_block(length_rule)
     if length_block:
@@ -201,9 +204,18 @@ def build_system_prompt(config: dict, modules=None, length_rule: str = "") -> st
     footer = build_tool_footer(length_rule)
     identity = ("你是 ReWrite 写作助手。你必须通过工具调用来操作数据，"
                 "而不是通过打字描述操作。")
-    if custom:
-        return f"{law}\n\n你是 ReWrite 写作助手。\n{custom}\n\n{footer}"
-    return f"{identity}\n\n{law}\n\n{footer}"
+
+    # 两级提示词：作品级优先，有则完全替代全局那段（不叠加）
+    work_prompt = (custom_prompt or "").strip()
+    global_prompt = (config.get("system_prompt") or "").strip()
+    custom = work_prompt or global_prompt
+
+    if not custom:
+        return f"{identity}\n\n{law}\n\n{footer}"
+    if prepend_custom and work_prompt:
+        # 破甲/角色卡类提示词需要最高优先级：放在最前
+        return f"{custom}\n\n---\n\n{identity}\n\n{law}\n\n{footer}"
+    return f"{identity}\n\n{law}\n\n你是 ReWrite 写作助手。\n{custom}\n\n{footer}"
 
 
 

@@ -72,19 +72,16 @@ class StreamingProposalWorker(QThread):
             from .prompt_templates import build_system_prompt
             from .skills.registry import get_openai_tools
 
-            # 工具铁律为硬编码(见 build_system_prompt),自定义提示词只能追加其后
-            system = build_system_prompt(self.agent.config,
-                                         getattr(self.agent, "enabled_modules", None),
-                                         getattr(self.agent, "length_rule", ""))
+            # 工具铁律为硬编码；作品级提示词覆盖全局级（见 build_system_prompt）
+            system = build_system_prompt(
+                self.agent.config,
+                getattr(self.agent, "enabled_modules", None),
+                getattr(self.agent, "length_rule", ""),
+                getattr(self.agent, "custom_prompt", "") or self.extra_system,
+                getattr(self.agent, "prepend_custom", False) or self.prepend_extra_system,
+            )
             if self.context:
                 system += f"\n\n## 当前作品上下文\n{self.context}"
-            if self.extra_system:
-                # 作品级提示词注入位置:prepend=True 时置于最前(最高优先级,
-                # 适合需要严格"宪法式"约束的写作场景);默认追加在最后
-                if self.prepend_extra_system:
-                    system = f"{self.extra_system}\n\n---\n\n{system}"
-                else:
-                    system += f"\n\n## 本作品的额外写作要求\n{self.extra_system}"
 
             self.agent.history.append({"role": "user", "content": self.message})
             recent = self.agent.history[-40:]
@@ -274,10 +271,14 @@ class ReasoningWorker(QThread):
         try:
             from .prompt_templates import build_system_prompt
 
-            # 工具铁律为硬编码(见 build_system_prompt),自定义提示词只能追加其后
-            system = build_system_prompt(self.agent.config,
-                                         getattr(self.agent, "enabled_modules", None),
-                                         getattr(self.agent, "length_rule", ""))
+            # 工具铁律为硬编码；作品级提示词覆盖全局级（见 build_system_prompt）
+            system = build_system_prompt(
+                self.agent.config,
+                getattr(self.agent, "enabled_modules", None),
+                getattr(self.agent, "length_rule", ""),
+                getattr(self.agent, "custom_prompt", ""),
+                getattr(self.agent, "prepend_custom", False),
+            )
             if self.context:
                 system += f"\n\n## 当前作品上下文\n{self.context}"
 
