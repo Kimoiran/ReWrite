@@ -870,11 +870,15 @@ class AIAssistantModule(BaseModule):
                     module_ref._on_ai_response(w, c); return
 
                 # 还有工具调用 → 继续循环(读免确认/写确认由 _handle_tool_calls 统一处理)
-                messages.append({"role": "assistant", "content": c,
+                assistant_msg = {"role": "assistant", "content": c,
                     "tool_calls": [{"id": t["id"], "type": "function",
                                     "function": {"name": t["function"]["name"],
                                                  "arguments": t["function"]["arguments"]}}
-                                   for t in tcs]})
+                                   for t in tcs]}
+                # thinking 模式要求回传 reasoning_content，否则续写请求会 400
+                if msg.get("reasoning_content"):
+                    assistant_msg["reasoning_content"] = msg["reasoning_content"]
+                messages.append(assistant_msg)
                 module_ref._handle_tool_calls(tcs, messages, system)
             finally:
                 # 数据已处理(或已停止):清理引用(不能早于 on_data,否则代际校验误判)

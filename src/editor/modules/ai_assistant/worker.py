@@ -100,7 +100,7 @@ class StreamingProposalWorker(QThread):
                 full = [{"role": "system", "content": system}]
                 full.extend(recent)
                 before = list(full)
-                after = build_continuation_messages(recent, full_text, tool_calls)
+                after = build_continuation_messages(recent, full_text, tool_calls, reasoning)
 
                 if reasoning:
                     self.reasoning_chunk.emit(reasoning)
@@ -135,7 +135,7 @@ class StreamingProposalWorker(QThread):
                         full = [{"role": "system", "content": system}]
                         full.extend(hist)
                         before = list(full)
-                        after = build_continuation_messages(hist, full_text, tool_calls)
+                        after = build_continuation_messages(hist, full_text, tool_calls, reasoning)
                         if reasoning:
                             self.reasoning_chunk.emit(reasoning)
                         self.proposals_ready.emit(tool_calls, before, after, system)
@@ -195,7 +195,7 @@ class StreamingLoopWorker(QThread):
         try:
             from .providers import _make_streaming_request, get_openai_tools, _StreamStopped
 
-            full_text, tool_calls, _ = _make_streaming_request(
+            full_text, tool_calls, reasoning = _make_streaming_request(
                 self.agent, self.messages, self.system,
                 on_content=lambda t: self.text_chunk.emit(t),
                 on_reasoning=lambda t: self.reasoning_chunk.emit(t),
@@ -204,18 +204,18 @@ class StreamingLoopWorker(QThread):
             )
 
             # 构造一个模拟的非流式响应 dict，让 module 层现有解析逻辑复用
-            fake_data = {
-                "choices": [{
-                    "message": {
-                        "content": full_text,
-                        "tool_calls": [{
-                            "id": tc["id"], "type": "function",
-                            "function": {"name": tc["function"]["name"],
-                                         "arguments": tc["function"]["arguments"]}
-                        } for tc in tool_calls]
-                    }
-                }]
+            message = {
+                "content": full_text,
+                "tool_calls": [{
+                    "id": tc["id"], "type": "function",
+                    "function": {"name": tc["function"]["name"],
+                                 "arguments": tc["function"]["arguments"]}
+                } for tc in tool_calls],
             }
+            if reasoning:
+                # thinking 模式要求回传 reasoning_content，module 会原样塞回消息里
+                message["reasoning_content"] = reasoning
+            fake_data = {"choices": [{"message": message}]}
             self.finished.emit(fake_data)
 
         except _StreamStopped:

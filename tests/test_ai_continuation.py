@@ -68,6 +68,17 @@ class ContinuationMessagesTest(unittest.TestCase):
         self.assertEqual(len(msgs), 2)
         self.assertEqual(msgs[0]["role"], "assistant")
 
+    def test_reasoning_content_is_passed_back(self):
+        """DeepSeek thinking 模式要求回传 reasoning_content，否则续写 400。"""
+        msgs = build_continuation_messages(_recent(), "开始", TOOL_CALLS,
+                                          reasoning="我先理一下开头怎么写")
+        self.assertEqual(msgs[-2]["reasoning_content"], "我先理一下开头怎么写")
+        self.assertEqual(msgs[-2]["role"], "assistant")
+
+    def test_no_field_when_no_reasoning(self):
+        msgs = build_continuation_messages(_recent(), "开始", TOOL_CALLS)
+        self.assertNotIn("reasoning_content", msgs[-2])
+
 
 class PendingPlaceholderTest(unittest.TestCase):
     """占位 tool 消息必须在注入真实结果前被移除，否则 AI 会看到空的工具结果。"""

@@ -10,17 +10,35 @@ from ....utils.logging_setup import get_logger
 
 log = get_logger(__name__)
 
-# 思考过程标记：显示时保留，发给 API 前必须剥离
+# 思考过程标记：界面显示用；发给 API 时**从正文摘出**，改放进 reasoning_content 字段
 _REASONING_BLOCK_RE = re.compile(
-    r"<!--REASONING-->\s*.*?\s*<!--/REASONING-->\s*", re.DOTALL)
+    r"<!--REASONING-->\s*(.*?)\s*<!--/REASONING-->\s*", re.DOTALL)
+
+
+def _split_reasoning_block(text: str) -> "tuple[str, str]":
+    """把 ``<!--REASONING-->…<!--/REASONING-->`` 从正文里摘出来。
+
+    返回 (reasoning, body)。没有标记时 reasoning 为空、body 原样返回。
+
+    为什么不直接丢掉：DeepSeek 的 thinking 模式要求把 ``reasoning_content``
+    **原样传回**，否则续写请求会 400。所以推理要保留，只是不能混在正文里
+    （混在正文里会被模型当成可以模仿的写法）。
+    """
+    if not isinstance(text, str) or "<!--REASONING-->" not in text:
+        return "", text
+    m = _REASONING_BLOCK_RE.search(text)
+    if not m:
+        return "", text
+    reasoning = (m.group(1) or "").strip()
+    body = (text[:m.start()] + text[m.end():]).strip()
+    return reasoning, body
 
 
 def strip_reasoning(text: str) -> str:
-    """去掉消息里的思考过程块，返回纯正文。
+    """去掉消息里的思考过程块，只返回正文（用于摘要/记忆压缩等场景）。
 
-    思考过程只用于界面显示与历史回放；如果把它一起发回模型，
-    一来白烧 token（推理往往比正文还长），二来模型会把自己斟酌中的
-    猜测当成既定事实，导致后续写作跑偏。
+    注意：构造**请求**时应使用 :func:`sanitize_messages`，它会把推理搬进
+    ``reasoning_content`` 字段而不是丢弃——thinking 模式要求回传该字段。
     """
     if not isinstance(text, str) or "<!--REASONING-->" not in text:
         return text
@@ -69,6 +87,12 @@ def sanitize_messages(messages: list) -> list:
        从头裁，最先丢的就是字数要求），也防止模型模仿历史里的占位措辞；
     3. 最新一轮（最后一条带 ``tool_calls`` 的 assistant）保持原样，
        否则 assistant/tool 配对会断。
+
+    ⚠️ 思考过程**不能直接丢掉**：DeepSeek 的 thinking 模式要求把
+    ``reasoning_content`` 原样传回，否则续写请求会 400
+    （"The reasoning_content in the thinking mode must be passed back to the API"）。
+    所以这里的处理是「**从正文里摘出来，放进独立字段**」：
+    ``content`` 只留正文，``reasoning_content`` 带上推理原文。
     """
     msgs = list(messages or [])
 
@@ -113,12 +137,25 @@ def sanitize_messages(messages: list) -> list:
         if not isinstance(content, str):
             cleaned.append(msg)          # Claude 的 content blocks 原样保留
             continue
-        stripped = strip_reasoning(content)
-        if (not stripped and content.strip() and not msg.get("tool_calls")
+
+        # 摘出思考过程：正文归 content，推理归 reasoning_content（thinking 模式要求回传）
+        reasoning, body = _split_reasoning_block(content)
+        existing = msg.get("reasoning_content")
+        if not reasoning and isinstance(existing, str) and existing:
+            reasoning = existing
+        if (not body and content.strip() and not msg.get("tool_calls")
                 and role == "assistant"):
-            continue                     # 这条消息除了思考过程什么都没有
-        cleaned.append(msg if stripped is content else {**msg, "content": stripped})
+            continue                     # 既没正文也没工具调用：空壳消息，丢掉
+
+        if reasoning == (existing or "") and body == content:
+            cleaned.append(msg)          # 没有任何变化
+        else:
+            fixed = {**msg, "content": body}
+            if reasoning:
+                fixed["reasoning_content"] = reasoning
+            cleaned.append(fixed)
     return cleaned
+
 
 
 SKILLS = get_all_skills()
@@ -754,7 +791,7 @@ def get_proposals_only(agent, message: str, context: str = ""):
     # 构建传递用的 messages
     before = list(full)
     # 续写轮必须带上完整对话（见 build_continuation_messages 的说明）
-    after = build_continuation_messages(recent, content, tool_calls)
+    after = build_continuation_messages(recent, content, tool_calls, reasoning)
 
     return (tool_calls, before, after, system, reasoning)
 
@@ -792,7 +829,8 @@ def get_final_response(agent, messages: list, system_prompt: str = ""):
     return result
 
 
-def build_continuation_messages(recent: list, content: str, tool_calls: list) -> list:
+def build_continuation_messages(recent: list, content: str, tool_calls: list,
+                                reasoning: str = "") -> list:
     """构造「工具执行后继续」这一轮要发给 AI 的消息。
 
     必须带上完整对话 ``recent``（含用户原始要求：篇幅、字数、风格、目标章节）。
@@ -800,16 +838,23 @@ def build_continuation_messages(recent: list, content: str, tool_calls: list) ->
     历史 bug：这里曾经只放 ``[assistant 工具调用, tool 占位]``，
     于是第二轮起 AI 既看不到「每章 5000 字」，也看不到前面写过的章节，
     表现为「要求 5000 字，自动化连续写作时缩到 1000 字左右」。
+
+    ``reasoning`` 是这一轮的思考过程，必须作为 ``reasoning_content`` 回传：
+    DeepSeek thinking 模式下缺少该字段会直接 400
+    （"The reasoning_content in the thinking mode must be passed back to the API"）。
     """
     messages = list(recent)
-    messages.append({
+    assistant = {
         "role": "assistant",
         "content": content,
         "tool_calls": [{"id": tc["id"], "type": "function",
                         "function": {"name": tc["function"]["name"],
                                      "arguments": tc["function"]["arguments"]}}
                        for tc in tool_calls],
-    })
+    }
+    if reasoning:
+        assistant["reasoning_content"] = reasoning
+    messages.append(assistant)
     # 占位:真实工具结果由调用方随后追加(见 prepare_after_messages)
     messages.append({"role": "tool", "tool_call_id": "pending", "content": ""})
     return messages
