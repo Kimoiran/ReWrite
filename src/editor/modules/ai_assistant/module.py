@@ -947,6 +947,8 @@ class AIAssistantModule(BaseModule):
             return  # 旧任务延迟错误:忽略
         if getattr(self, "_stopped_flag", False):
             return  # 停止与错误竞争:以停止为准
+        # 记进日志：以前这里只写聊天框，出问题时日志里一条都不剩，无从排查
+        logger.error("AI 请求失败: %s", error_msg[:1500])
         self.chat_panel.hide_loading()
         self.chat_panel.add_message("assistant", f"[错误] {error_msg}")
         self.chat_panel.set_busy(False)  # 解锁发言栏

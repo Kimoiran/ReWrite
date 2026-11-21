@@ -78,13 +78,24 @@ def sanitize_messages(messages: list) -> list:
         if m.get("role") == "assistant" and m.get("tool_calls"):
             last_tc = i
 
+    # 已经拿到回执的 tool_call id。凡是回执缺失（例如写操作被中途跳过、id 为空），
+    # 该组 tool_calls 会让服务端直接 400「消息序列不合法」，因此一律折叠掉。
+    answered = {m.get("tool_call_id") for m in msgs
+                if m.get("role") == "tool" and m.get("tool_call_id")}
+
+    def _complete(msg) -> bool:
+        ids = [(tc or {}).get("id") for tc in (msg.get("tool_calls") or [])]
+        return bool(ids) and all(i and i in answered for i in ids)
+
     collapsed_ids = set()
     cleaned = []
     for i, msg in enumerate(msgs):
         role = msg.get("role")
 
         # 历史轮次：assistant(tool_calls) + tool 回执 → 一行日志
-        if role == "assistant" and msg.get("tool_calls") and i != last_tc:
+        # 当前轮若回执不全，也折叠（宁可丢这一轮的痕迹，也不要整个请求 400）
+        if role == "assistant" and msg.get("tool_calls") and (
+                i != last_tc or not _complete(msg)):
             for tc in msg["tool_calls"]:
                 cid = (tc or {}).get("id")
                 if cid:
@@ -382,9 +393,45 @@ class _StreamStopped(Exception):
     """用户点击「停止」主动中断流式生成(携带已生成的部分由调用方决定去留)。"""
 
 
+_CONTEXT_400_HINTS = ("max_tokens", "maximum context", "context length",
+                      "too large", "reduce the length", "invalid_request_error")
+
+
+def _looks_like_context_error(body: str) -> bool:
+    low = (body or "").lower()
+    return any(h in low for h in _CONTEXT_400_HINTS)
+
+
+def _describe_messages(messages: list) -> str:
+    """把请求的消息骨架压成一行日志：角色序列 + 工具调用配对情况。
+
+    400 时最需要的就是这个——只看「HTTP 400」永远猜不出来。
+    """
+    roles = []
+    call_ids = set()
+    tool_ids = set()
+    for m in messages or []:
+        role = m.get("role", "?")
+        if role == "assistant" and m.get("tool_calls"):
+            ids = [(tc or {}).get("id") or "<空>" for tc in m["tool_calls"]]
+            call_ids |= set(ids)
+            roles.append(f"assistant(tool_calls={','.join(ids)})")
+        elif role == "tool":
+            cid = m.get("tool_call_id") or "<空>"
+            tool_ids.add(cid)
+            roles.append(f"tool({cid})")
+        else:
+            roles.append(role)
+    orphan = tool_ids - call_ids
+    unanswered = call_ids - tool_ids
+    return (f"roles={roles} | 孤儿回执={sorted(orphan) or '无'} | "
+            f"未回执调用={sorted(unanswered) or '无'}")
+
+
 def _make_streaming_request(agent, messages: list, system_prompt: str = "",
                              on_reasoning=None, on_content=None, tools: list = None,
-                             retries: int = 2, stop_event=None):
+                             retries: int = 2, stop_event=None,
+                             max_tokens: int = 32768, _reduced: bool = False):
     """流式请求，边接收边回调。返回 (full_text, tool_calls, reasoning)。
 
     - on_reasoning(chunk): 收到推理内容时回调
@@ -405,7 +452,7 @@ def _make_streaming_request(agent, messages: list, system_prompt: str = "",
         full.append({"role": "system", "content": system_prompt})
     full.extend(sanitize_messages(messages))
 
-    payload = {"model": model, "max_tokens": 32768, "messages": full, "stream": True}
+    payload = {"model": model, "max_tokens": max_tokens, "messages": full, "stream": True}
     if tools:
         payload["tools"] = tools
     body = _json.dumps(payload).encode("utf-8")
@@ -507,11 +554,22 @@ def _make_streaming_request(agent, messages: list, system_prompt: str = "",
                 continue
             raise  # 已推送部分内容:不重试,避免重复
         except urllib.error.HTTPError as e:
-            # 仅对可重试状态码重试;4xx 其余直接抛
+            # 仅对可重试状态码重试;4xx 其余直接抛（并带上服务端响应体）
             if e.code in (429, 500, 502, 503, 504) and attempt < retries:
                 _time.sleep(1.5 * (attempt + 1))
                 continue
-            raise
+            body = _read_error_body(e)
+            log.error("流式请求被拒绝 HTTP %s: %s", e.code, body[:800])
+            log.error("请求消息骨架: %s", _describe_messages(full[1:]))
+            # 400 且像是「输出上限/上下文超长」→ 降一次 max_tokens 自动重试，
+            # 免得用户只看到一句 Bad Request
+            if (e.code == 400 and not _reduced and _looks_like_context_error(body)):
+                log.warning("疑似上下文/输出上限，降级 max_tokens=8192 重试一次")
+                return _make_streaming_request(
+                    agent, messages, system_prompt, on_reasoning, on_content,
+                    tools, retries=0, stop_event=stop_event,
+                    max_tokens=8192, _reduced=True)
+            raise ApiStatusError(e.code, body) from e
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             if attempt < retries:
                 _time.sleep(1.5 * (attempt + 1))
@@ -536,14 +594,43 @@ _FAKE_PROMISE_RE = [
 _TOOL_NAME_RE = re.compile(r"[a-z_]+\(")
 
 
+class ApiStatusError(RuntimeError):
+    """HTTP 4xx/5xx 错误，**带上服务端响应体**。
+
+    之前只抛 ``HTTP Error 400: Bad Request``，界面和日志里都看不到服务端说了什么，
+    无法定位（400 的常见原因是消息序列不合法、上下文超长、参数不被支持）。
+    """
+
+    def __init__(self, code: int, body: str):
+        self.code = code
+        self.body = body or ""
+        snippet = self.body.strip()
+        super().__init__(f"HTTP {code}: {snippet[:600] if snippet else '服务端未返回内容'}")
+
+
+def _read_error_body(e) -> str:
+    """读取 HTTPError 的响应体（读不到就算了，不能因此再抛异常）。"""
+    try:
+        return e.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
 def friendly_api_error(err: str) -> str:
-    """把底层异常消息映射为用户可读的提示(网络中断/超时等)。"""
+    """把底层异常消息映射为用户可读的提示(网络中断/超时/参数错误等)。"""
     if ("10054" in err or "RemoteDisconnected" in err or "ConnectionResetError" in err
             or "远程主机强迫关闭" in err):
         return ("网络连接被服务端中断(10054)。可能是网络波动、请求过大或服务端超时。"
                 "请重试;若频繁出现,建议缩短对话上下文或检查网络。")
     if "timed out" in err.lower() or "timeout" in err.lower():
         return "请求超时。请重试;若频繁出现,建议缩短对话上下文。"
+    if "HTTP 400" in err:
+        return ("请求被服务端拒绝(400)。常见原因：消息序列不合法（工具调用缺少对应回执）、"
+                "上下文超长、模型名或参数不被支持。\n服务端原文：\n" + err.split(":", 1)[-1].strip()[:600])
+    if "HTTP 401" in err or "HTTP 403" in err:
+        return "鉴权失败(401/403)。请检查设置里的 API Key 是否有效、是否有该模型的权限。\n" + err[:400]
+    if "HTTP 404" in err:
+        return "接口或模型不存在(404)。请检查「自定义 API URL」与「模型名」是否正确。\n" + err[:400]
     return err
 
 
@@ -637,9 +724,10 @@ def get_proposals_only(agent, message: str, context: str = ""):
         with urllib.request.urlopen(req, timeout=120) as resp:
             data = _j.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        err = e.read().decode("utf-8", errors="replace")
+        err = _read_error_body(e)
+        log.error("提案请求被拒绝 HTTP %s: %s", e.code, err[:800])
         _rollback_user_message(agent, message)
-        return f"[错误] HTTP {e.code}: {err[:200]}"
+        return f"[错误] HTTP {e.code}: {err[:600]}"
     except Exception as e:
         _rollback_user_message(agent, message)
         return f"[错误] {e}"
