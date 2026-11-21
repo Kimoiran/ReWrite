@@ -354,3 +354,33 @@ def resolve_chapter_file(chapters_dir: Path, query: str) -> "Path | None":
             best, best_score = f, score
     return best
 
+
+def looks_like_rewrite(old: str, new: str) -> bool:
+    """判断新内容是否「基本等于刚写过的那一版」。
+
+    用于拦截「用户已经允许、写入也成功了，AI 却又重写一遍同一章」。
+    重新生成的版本通常不会逐字节相同，所以要按**相似度**判断：
+    取前 2000 字做字符级比对（``difflib`` 的 autojunk 让常见字快速跳过，
+    单次开销在毫秒级），相似度 ≥ 0.9 视为同一版。
+
+    之所以不用「首尾各 150 字相同」这种廉价判据：中间插一句就会失配，
+    而重新生成时最常见的变化恰恰就是中间加一句。
+    """
+    import difflib
+
+    a = (old or "").strip()
+    b = (new or "").strip()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    # 长度差太大直接否掉，省掉一次比对
+    longest = max(len(a), len(b))
+    if abs(len(a) - len(b)) > max(300, int(longest * 0.20)):
+        return False
+    try:
+        ratio = difflib.SequenceMatcher(None, a[:2000], b[:2000]).ratio()
+    except Exception:
+        return False
+    return ratio >= 0.9
+

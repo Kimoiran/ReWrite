@@ -76,8 +76,10 @@ def _summarize_tool_calls(tool_calls: list) -> str:
     return "[工具记录] " + "；".join(parts)
 
 
-_TOOL_CONTINUE_NUDGE = ("（上一步的工具已执行，结果见上一条 [工具记录]；"
-                        "不要重复读取同样的信息，直接继续下一步。）")
+_TOOL_CONTINUE_NUDGE = (
+    "（上一步的工具已经执行成功，结果见上一条 [工具记录]。"
+    "如果当前任务已经完成，**直接给用户 1-2 句简短结论，不要再调用工具**；"
+    "如果还有后续章节要写，继续执行下一步。不要重复执行刚做完的操作。）")
 
 _READ_PREFIXES = ("get_", "read_", "search_", "list_")
 

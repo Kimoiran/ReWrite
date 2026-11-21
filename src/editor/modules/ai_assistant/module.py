@@ -72,6 +72,8 @@ class AIAssistantModule(BaseModule):
         # 连续同名同参调用计数（防「一直读章节列表」这类死循环）
         self._last_call_sig = None
         self._same_call_streak = 0
+        # 本任务内已写过的章节 → 内容（用于拦截「写完又重写一遍」）
+        self._written_this_task = {}
 
     # ── 生命周期 ──
 
@@ -446,6 +448,7 @@ class AIAssistantModule(BaseModule):
         self._loop_guard_tripped = False
         self._last_call_sig = None
         self._same_call_streak = 0
+        self._written_this_task = {}
         self._streaming_bubble = None
         self._streaming_text = ""
         self._round_reasoning = ""
@@ -831,7 +834,7 @@ class AIAssistantModule(BaseModule):
         """
         from .skills.chapter_skills import normalize_chapter_content
         from .skills._shared import (resolve_chapter_file, list_chapter_names,
-                                     chapter_display_name)
+                                     chapter_display_name, looks_like_rewrite)
         work = self.work_path
         chapter = str(args.get("chapter", ""))
         cd = work / "chapters"; old_c = ""
@@ -867,11 +870,26 @@ class AIAssistantModule(BaseModule):
                     "error": f"「{chapter}」的内容与现有文件完全一致，未做任何修改。"
                              f"请不要重复写入同一章——要么继续下一章，要么向用户说明。",
                     "chapter": chapter}
+        # 本任务内已经写过这一章，且这次内容与之基本相同 → 拦截「写完又重写一遍」。
+        # 重新生成的版本往往不是逐字节相同，所以要按"高度相似"判断。
+        written = getattr(self, "_written_this_task", {})
+        prev = written.get(display_cn)
+        if prev is not None and looks_like_rewrite(prev, new_c):
+            logger.info("拦截重复写入(本任务已写过且高度相似): %s", cn)
+            return {"success": False, "unchanged": True,
+                    "error": f"「{chapter}」在本任务内已经成功写入过（约 {len(prev)} 字符），"
+                             f"这次内容与之基本相同，已跳过写入。"
+                             f"请不要重复写同一章——直接向用户汇报，或继续下一章。",
+                    "chapter": chapter, "already_written": True}
         if auto or self._show_diff_dialog(old_c, new_c, cn):
             try:
                 tp.write_text(new_c, encoding="utf-8")
             except OSError as e:
                 return {"success": False, "error": f"写入章节失败: {e}"}
+            # 记住本任务内写过这一章（内容用于识别"又重写一遍"）
+            if not hasattr(self, "_written_this_task"):
+                self._written_this_task = {}
+            self._written_this_task[display_cn] = new_c
             logger.info(f"章节 diff 确认: {cn}")
             return {"success": True, "chapter": chapter}
         logger.info("章节 diff 被拒绝")

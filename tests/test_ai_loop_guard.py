@@ -193,6 +193,56 @@ class UnchangedChapterWriteTest(unittest.TestCase):
         result = self._write(self.BODY)
         self.assertIn("不要重复写入", result.get("error", ""))
 
+    def test_rewrite_after_successful_write_is_rejected(self):
+        """用户允许、写入成功后，AI 又重写一遍几乎相同的内容 → 拦掉。
+
+        重新生成的版本通常不是逐字节相同，所以判据是「高度相似」而非相等。
+        """
+        long_body = ("# 第一章 拜师引路\n\n"
+                     + "合欢宗的风从云岚洞府穿过，带着灵香。" * 20
+                     + "\n\n她把手贴在冰凉的玉阶上，听见自己的心跳。")
+        self._seed("# 第一章 拜师引路\n\n（空）")
+        self.assertTrue(self._write(long_body).get("success"))
+
+        regenerated = long_body.replace("听见自己的心跳。", "听见自己的心跳，一下比一下重。")
+        second = self._write(regenerated)
+        self.assertFalse(second.get("success"), second)
+        self.assertTrue(second.get("already_written") or second.get("unchanged"))
+
+    def test_substantially_different_rewrite_is_allowed(self):
+        """真正重写（内容差别很大）必须放行，不能误伤。"""
+        self._seed("# 第一章 拜师引路\n\n（空）")
+        self.assertTrue(self._write("# 第一章 拜师引路\n\n" + "甲" * 400).get("success"))
+        fresh = "# 第一章 拜师引路\n\n" + "乙" * 400
+        self.assertTrue(self._write(fresh).get("success"))
+
+
+class LooksLikeRewriteTest(unittest.TestCase):
+    """廉价相似度判据的单测。"""
+
+    def test_identical(self):
+        from src.editor.modules.ai_assistant.skills._shared import looks_like_rewrite
+        self.assertTrue(looks_like_rewrite("正文" * 200, "正文" * 200))
+
+    def test_near_identical_middle_change(self):
+        from src.editor.modules.ai_assistant.skills._shared import looks_like_rewrite
+        base = "开头" + "中间" * 100 + "结尾"
+        changed = "开头" + "中间" * 100 + "改了" + "结尾"
+        self.assertTrue(looks_like_rewrite(base, changed))
+
+    def test_very_different(self):
+        from src.editor.modules.ai_assistant.skills._shared import looks_like_rewrite
+        self.assertFalse(looks_like_rewrite("甲" * 500, "乙" * 500))
+
+    def test_length_far_apart(self):
+        from src.editor.modules.ai_assistant.skills._shared import looks_like_rewrite
+        self.assertFalse(looks_like_rewrite("正文" * 500, "正文" * 100))
+
+    def test_empty_is_not_rewrite(self):
+        from src.editor.modules.ai_assistant.skills._shared import looks_like_rewrite
+        self.assertFalse(looks_like_rewrite("", "正文"))
+        self.assertFalse(looks_like_rewrite("正文", ""))
+
 
 if __name__ == "__main__":
     unittest.main()
